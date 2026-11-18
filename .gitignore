@@ -1,0 +1,15 @@
+/target/
+**/*.rs.bk
+*.profraw
+lcov.info
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/settings.json

@@ -1,0 +1,66 @@
+name: Nightly — crates.io (pre-release)
+
+# Manual: run it from the branch to publish (develop, or main). The version
+# exists only in this workspace: nothing is committed back. A nightly is a SemVer
+# pre-release (X.Y.Z-dev.YYYYMMDDHHMM), which Cargo only selects when asked for it.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Quality gates
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Publish the nightly to crates.io
+    needs: quality
+    runs-on: ubuntu-latest
+    environment:
+      name: crates-io
+      url: https://crates.io/crates/auth-ai
+    permissions:
+      contents: read
+      # OIDC token for crates.io Trusted Publishing: no long-lived registry token is used.
+      id-token: write
+    steps:
+      - name: Only develop and main may be published
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          case "$REF_NAME" in
+            develop | main) ;;
+            *) echo "::error::Run this workflow from develop or main, not '${REF_NAME}'."; exit 1 ;;
+          esac
+
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@1.89.0
+
+      # A nightly of an already released version would sort before it
+      # (0.1.0-dev < 0.1.0): it is numbered after the next patch instead.
+      - name: Compute the nightly version
+        run: |
+          base=$(sed -n -E '0,/^version = "([0-9]+\.[0-9]+\.[0-9]+).*"/s//\1/p' Cargo.toml)
+          if curl -fsS -A "circle-rd/auth-ai-rs nightly" -o /dev/null "https://crates.io/api/v1/crates/auth-ai/${base}"; then
+            IFS=. read -r major minor patch <<< "$base"
+            base="${major}.${minor}.$((patch + 1))"
+          fi
+          nightly="${base}-dev.$(date -u +%Y%m%d%H%M)"
+          sed -i -E "0,/^version = \".*\"/s//version = \"${nightly}\"/" Cargo.toml
+          grep -n '^version = ' Cargo.toml | head -1
+
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      # The version changed in the manifest only: the lockfile of a library is not shipped.
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish --allow-dirty

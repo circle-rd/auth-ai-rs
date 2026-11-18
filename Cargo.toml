@@ -1,0 +1,67 @@
+[package]
+name = "auth-ai"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT"
+description = "Rust SDK for applications relying on a CIRCLE auth-service identity provider: OIDC sign-in (backend-for-frontend), entitlements, billing, credit wallet, LiteLLM gateway and resource sharing."
+readme = "README.md"
+authors = ["CIRCLE <https://circle-cyber.com>"]
+repository = "https://github.com/circle-rd/auth-ai-rs"
+documentation = "https://docs.rs/auth-ai"
+keywords = ["oidc", "oauth2", "authentication", "pkce", "llm"]
+categories = ["authentication", "web-programming"]
+include = [
+  "src/**",
+  "Cargo.toml",
+  "README.md",
+  "LICENSE",
+  "CHANGELOG.md",
+  "SECURITY.md",
+]
+
+[features]
+default = []
+# Axum adapter for the backend-for-frontend routes.
+axum = ["dep:axum"]
+
+[dependencies]
+async-trait = "0.1.92"
+aws-lc-rs = "1.19"
+axum = { version = "0.8", optional = true, default-features = false, features = ["tokio"] }
+base64 = "0.23"
+jsonwebtoken = { version = "12", default-features = false, features = ["aws_lc_rs"] }
+percent-encoding = "2.3"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "json", "gzip", "brotli"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+time = { version = "0.3", default-features = false, features = ["serde-well-known", "std"] }
+tokio = { version = "1.54", default-features = false, features = ["sync", "time", "rt", "macros"] }
+url = "2.5"
+zeroize = "1.8"
+
+[dev-dependencies]
+axum = { version = "0.8", features = ["http1", "json", "tokio"] }
+tokio = { version = "1.54", features = ["macros", "net", "rt-multi-thread", "sync", "time", "test-util"] }
+tower = { version = "0.5", features = ["util"] }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+indexing_slicing = "deny"
