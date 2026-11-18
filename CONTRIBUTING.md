@@ -38,6 +38,14 @@ For the full command table see [AGENTS.md → Build & Test Commands](AGENTS.md#b
 | `cargo doc --no-deps --all-features`       | Before opening a PR         |
 | `cargo audit`                              | Before opening a PR         |
 
+### Documentation
+
+The documentation site lives in `docs-site/` (Docus). Build it in Docker:
+
+```bash
+docker build -t auth-ai-rs-docs ./docs-site
+```
+
 ---
 
 ## 2. Versioning and breaking changes
@@ -132,7 +140,7 @@ Types: `feat`, `fix`, `refactor`, `test`, `chore`, `docs`, `perf`, `build`, `ci`
 - [ ] `cargo audit` reports nothing and `cargo package --locked` passes
 - [ ] New behaviour has tests; a security check has a test that fails without it
 - [ ] No `unwrap`, `expect`, `unsafe`, dead code, or secret or token in a message, log or test output
-- [ ] Rustdoc, README quick start and `CHANGELOG.md` updated for user-visible changes
+- [ ] Rustdoc, docs (`docs-site/`), README quick start and `CHANGELOG.md` updated for user-visible changes
 - [ ] Breaking changes bump the version and carry a migration note
 
 For the rationale behind each gate and the standards new code must meet, see

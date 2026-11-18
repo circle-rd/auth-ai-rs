@@ -21,28 +21,10 @@ use auth_ai::server::{
 };
 use serde_json::{Map, Value, json};
 use support::{
-    CLIENT_ID, ISSUER, MockIdp, REDIRECT_URI, form_of, json_of, path_of, respond, test_auth,
-    token_response,
+    CLIENT_ID, ISSUER, MockIdp, REDIRECT_URI, bearer, form_of, json_of, machine, path_of, respond,
 };
 
 const RESOURCE: &str = "0f9d6a3e-5c1b-4d52-9a47-2b8f3c6e1a90";
-
-fn machine() -> (Arc<MockIdp>, MachineApi, Arc<AtomicU32>) {
-    let idp = MockIdp::new();
-    let minted = Arc::new(AtomicU32::new(0));
-    let counter = Arc::clone(&minted);
-    idp.on_token(move |request| {
-        let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
-        let scope = form_of(request).get("scope").cloned().unwrap_or_default();
-        token_response(&json!({ "access_token": format!("machine-{n}-{scope}") }))
-    });
-    let api = MachineApi::new(&test_auth(&idp)).unwrap();
-    (idp, api, minted)
-}
-
-fn bearer(request: &auth_ai::HttpRequest) -> String {
-    request.header("authorization").unwrap().to_owned()
-}
 
 // ── tokens ──
 

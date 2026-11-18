@@ -20,11 +20,17 @@ use auth_ai::{
     AuthAiError, AuthClient, AuthClientConfig, AuthClientConfigBuilder, HttpRequest, HttpResponse,
     LoginHandshake, Transport, TransportError,
 };
+use aws_lc_rs::hmac;
 use aws_lc_rs::rand::SystemRandom;
-use aws_lc_rs::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
+use aws_lc_rs::rsa::{KeySize, PublicKeyComponents};
+use aws_lc_rs::signature::{
+    ECDSA_P256_SHA256_FIXED_SIGNING, ECDSA_P384_SHA384_FIXED_SIGNING,
+    ECDSA_P521_SHA512_FIXED_SIGNING, EcdsaKeyPair, EcdsaSigningAlgorithm, Ed25519KeyPair, KeyPair,
+    RSA_PKCS1_SHA256, RSA_PKCS1_SHA384, RSA_PKCS1_SHA512, RSA_PSS_SHA256, RSA_PSS_SHA384,
+    RSA_PSS_SHA512, RsaKeyPair, RsaSignatureEncoding,
+};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde_json::{Value, json};
 use url::Url;
 
@@ -51,33 +57,158 @@ fn locked<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// An ES256 signing key and the JWK that publishes it.
+/// A signature algorithm of the SDK, as a provider would advertise it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestAlgorithm {
+    Es256,
+    Es384,
+    Es512,
+    Rs256,
+    Rs384,
+    Rs512,
+    Ps256,
+    Ps384,
+    Ps512,
+    Ed25519,
+}
+
+impl TestAlgorithm {
+    pub const ALL: [Self; 10] = [
+        Self::Es256,
+        Self::Es384,
+        Self::Es512,
+        Self::Rs256,
+        Self::Rs384,
+        Self::Rs512,
+        Self::Ps256,
+        Self::Ps384,
+        Self::Ps512,
+        Self::Ed25519,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Es256 => "ES256",
+            Self::Es384 => "ES384",
+            Self::Es512 => "ES512",
+            Self::Rs256 => "RS256",
+            Self::Rs384 => "RS384",
+            Self::Rs512 => "RS512",
+            Self::Ps256 => "PS256",
+            Self::Ps384 => "PS384",
+            Self::Ps512 => "PS512",
+            Self::Ed25519 => "Ed25519",
+        }
+    }
+}
+
+enum Key {
+    Ec(EcdsaKeyPair),
+    Rsa(RsaKeyPair, &'static RsaSignatureEncoding),
+    Ed25519(Ed25519KeyPair),
+}
+
+fn b64(bytes: &[u8]) -> String {
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// A signing key of any supported algorithm and the JWK that publishes it.
 pub struct Signer {
-    der: Vec<u8>,
+    algorithm: TestAlgorithm,
+    key: Key,
     jwk: Value,
 }
 
 impl Signer {
+    /// An ES256 key, which is what auth-service signs with.
     pub fn generate(kid: &str) -> Self {
-        let pkcs8 =
-            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
-                .unwrap();
-        let pair =
-            EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref()).unwrap();
-        let point = pair.public_key().as_ref().to_vec();
-        let jwk = json!({
-            "kty": "EC", "crv": "P-256", "alg": "ES256", "use": "sig", "kid": kid,
-            "x": URL_SAFE_NO_PAD.encode(&point[1..33]),
-            "y": URL_SAFE_NO_PAD.encode(&point[33..65]),
-        });
+        Self::generate_with(kid, TestAlgorithm::Es256)
+    }
+
+    pub fn generate_with(kid: &str, algorithm: TestAlgorithm) -> Self {
+        let rng = SystemRandom::new();
+        let mut jwk = json!({ "use": "sig", "kid": kid, "alg": algorithm.name() });
+        let curve = |parameters: &'static EcdsaSigningAlgorithm,
+                     crv: &str,
+                     length: usize,
+                     jwk: &mut Value| {
+            let pkcs8 = EcdsaKeyPair::generate_pkcs8(parameters, &rng).unwrap();
+            let pair = EcdsaKeyPair::from_pkcs8(parameters, pkcs8.as_ref()).unwrap();
+            let point = pair.public_key().as_ref().to_vec();
+            merge_into(
+                jwk,
+                json!({
+                    "kty": "EC", "crv": crv,
+                    "x": b64(&point[1..=length]), "y": b64(&point[1 + length..1 + 2 * length]),
+                }),
+            );
+            Key::Ec(pair)
+        };
+        let rsa = |padding: &'static RsaSignatureEncoding, jwk: &mut Value| {
+            let pair = RsaKeyPair::generate(KeySize::Rsa2048).unwrap();
+            let components = PublicKeyComponents::<Vec<u8>>::from(pair.public_key());
+            merge_into(
+                jwk,
+                json!({ "kty": "RSA", "n": b64(&components.n), "e": b64(&components.e) }),
+            );
+            Key::Rsa(pair, padding)
+        };
+        let key = match algorithm {
+            TestAlgorithm::Es256 => curve(&ECDSA_P256_SHA256_FIXED_SIGNING, "P-256", 32, &mut jwk),
+            TestAlgorithm::Es384 => curve(&ECDSA_P384_SHA384_FIXED_SIGNING, "P-384", 48, &mut jwk),
+            TestAlgorithm::Es512 => curve(&ECDSA_P521_SHA512_FIXED_SIGNING, "P-521", 66, &mut jwk),
+            TestAlgorithm::Rs256 => rsa(&RSA_PKCS1_SHA256, &mut jwk),
+            TestAlgorithm::Rs384 => rsa(&RSA_PKCS1_SHA384, &mut jwk),
+            TestAlgorithm::Rs512 => rsa(&RSA_PKCS1_SHA512, &mut jwk),
+            TestAlgorithm::Ps256 => rsa(&RSA_PSS_SHA256, &mut jwk),
+            TestAlgorithm::Ps384 => rsa(&RSA_PSS_SHA384, &mut jwk),
+            TestAlgorithm::Ps512 => rsa(&RSA_PSS_SHA512, &mut jwk),
+            TestAlgorithm::Ed25519 => {
+                let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+                let pair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+                merge_into(
+                    &mut jwk,
+                    json!({ "kty": "OKP", "crv": "Ed25519", "x": b64(pair.public_key().as_ref()) }),
+                );
+                Key::Ed25519(pair)
+            }
+        };
         Self {
-            der: pkcs8.as_ref().to_vec(),
+            algorithm,
+            key,
             jwk,
         }
     }
 
+    pub fn algorithm(&self) -> TestAlgorithm {
+        self.algorithm
+    }
+
     pub fn jwk(&self) -> Value {
         self.jwk.clone()
+    }
+
+    pub fn raw_sign(&self, message: &[u8]) -> Vec<u8> {
+        let rng = SystemRandom::new();
+        match &self.key {
+            Key::Ec(pair) => pair.sign(&rng, message).unwrap().as_ref().to_vec(),
+            Key::Ed25519(pair) => pair.sign(message).as_ref().to_vec(),
+            Key::Rsa(pair, padding) => {
+                let mut signature = vec![0_u8; pair.public_modulus_len()];
+                pair.sign(*padding, &rng, message, &mut signature).unwrap();
+                signature
+            }
+        }
+    }
+
+    /// A compact JWS with exactly this header.
+    pub fn sign_with_header(&self, header: &Value, claims: &Value) -> String {
+        let input = format!(
+            "{}.{}",
+            b64(header.to_string().as_bytes()),
+            b64(claims.to_string().as_bytes())
+        );
+        format!("{input}.{}", b64(&self.raw_sign(input.as_bytes())))
     }
 
     pub fn sign(
@@ -87,22 +218,31 @@ impl Signer {
         typ: Option<&str>,
         omit_typ: bool,
     ) -> String {
-        let mut header = Header::new(Algorithm::ES256);
-        header.kid = kid.map(str::to_owned);
-        header.typ = if omit_typ {
-            None
-        } else {
-            Some(typ.unwrap_or("JWT").to_owned())
-        };
-        jsonwebtoken::encode(&header, claims, &EncodingKey::from_ec_der(&self.der)).unwrap()
+        let mut header = json!({ "alg": self.algorithm.name() });
+        if let Some(kid) = kid {
+            header["kid"] = json!(kid);
+        }
+        if !omit_typ {
+            header["typ"] = json!(typ.unwrap_or("JWT"));
+        }
+        self.sign_with_header(&header, claims)
     }
+}
+
+fn merge_into(target: &mut Value, extra: Value) {
+    merge(target, &extra);
 }
 
 /// A token signed with a shared secret, for the algorithm-confusion tests.
 pub fn hs256_token(claims: &Value, secret: &[u8]) -> String {
-    let mut header = Header::new(Algorithm::HS256);
-    header.kid = Some("key-1".to_owned());
-    jsonwebtoken::encode(&header, claims, &EncodingKey::from_secret(secret).unwrap()).unwrap()
+    let header = json!({ "alg": "HS256", "kid": "key-1", "typ": "JWT" });
+    let input = format!(
+        "{}.{}",
+        b64(header.to_string().as_bytes()),
+        b64(claims.to_string().as_bytes())
+    );
+    let tag = hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, secret), input.as_bytes());
+    format!("{input}.{}", b64(tag.as_ref()))
 }
 
 pub struct MockIdp {
@@ -130,6 +270,10 @@ impl std::fmt::Debug for MockIdp {
 
 impl MockIdp {
     pub fn new() -> Arc<Self> {
+        Self::with_algorithm(TestAlgorithm::Es256)
+    }
+
+    pub fn with_algorithm(algorithm: TestAlgorithm) -> Arc<Self> {
         let metadata = json!({
             "issuer": ISSUER,
             "authorization_endpoint": format!("{ISSUER}/authorize"),
@@ -139,11 +283,11 @@ impl MockIdp {
             "introspection_endpoint": format!("{ISSUER}/introspect"),
             "revocation_endpoint": format!("{ISSUER}/revoke"),
             "end_session_endpoint": format!("{ISSUER}/end-session"),
-            "id_token_signing_alg_values_supported": ["ES256"],
+            "id_token_signing_alg_values_supported": [algorithm.name()],
             "authorization_response_iss_parameter_supported": true,
         });
         Arc::new(Self {
-            signer: Signer::generate("key-1"),
+            signer: Signer::generate_with("key-1", algorithm),
             metadata: Mutex::new(metadata),
             requests: Mutex::new(Vec::new()),
             gateway_requests: Mutex::new(Vec::new()),
@@ -418,4 +562,27 @@ pub async fn sign_in(
     auth.handle_callback(&callback_url(&handshake, ""), &handshake)
         .await
         .unwrap()
+}
+
+/// A machine API whose tokens read `machine-<n>-<scope>`, and the count of tokens minted.
+pub fn machine() -> (
+    Arc<MockIdp>,
+    auth_ai::server::MachineApi,
+    Arc<std::sync::atomic::AtomicU32>,
+) {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let idp = MockIdp::new();
+    let minted = Arc::new(AtomicU32::new(0));
+    let counter = Arc::clone(&minted);
+    idp.on_token(move |request| {
+        let n = counter.fetch_add(1, Ordering::SeqCst) + 1;
+        let scope = form_of(request).get("scope").cloned().unwrap_or_default();
+        token_response(&json!({ "access_token": format!("machine-{n}-{scope}") }))
+    });
+    let api = auth_ai::server::MachineApi::new(&test_auth(&idp)).unwrap();
+    (idp, api, minted)
+}
+
+pub fn bearer(request: &HttpRequest) -> String {
+    request.header("authorization").unwrap().to_owned()
 }

@@ -188,19 +188,25 @@ struct ResourceResponse {
     resource: ResourceState,
 }
 
-fn invalid(what: &str, issues: &[String]) -> AuthAiError {
+pub(super) fn invalid(what: &str, issues: &[String]) -> AuthAiError {
     AuthAiError::new(ErrorCode::Cfg001)
         .with_message(format!("Invalid {what}: {}", issues.join("; ")))
 }
 
-fn length_between(issues: &mut Vec<String>, field: &str, value: &str, min: usize, max: usize) {
+pub(super) fn length_between(
+    issues: &mut Vec<String>,
+    field: &str,
+    value: &str,
+    min: usize,
+    max: usize,
+) {
     let length = value.chars().count();
     if length < min || length > max {
         issues.push(format!("{field}: must be {min} to {max} characters"));
     }
 }
 
-fn is_uuid(value: &str) -> bool {
+pub(super) fn is_uuid(value: &str) -> bool {
     let groups: Vec<&str> = value.split('-').collect();
     groups.len() == 5
         && groups.iter().zip([8, 4, 4, 4, 12]).all(|(group, length)| {
@@ -262,6 +268,10 @@ pub struct AuthorizeRequest<'a> {
 impl ResourcesApi {
     pub(crate) const fn new(http: Arc<JsonHttp>) -> Self {
         Self { http }
+    }
+
+    pub(super) fn http(&self) -> &JsonHttp {
+        &self.http
     }
 
     /// Asks whether a user may use a resource. Needs `resources:authorize`.

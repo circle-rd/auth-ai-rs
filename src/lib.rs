@@ -25,6 +25,7 @@ mod grants;
 mod http;
 mod id_token;
 mod introspection;
+mod jws;
 mod jwt;
 mod messages;
 mod provider;

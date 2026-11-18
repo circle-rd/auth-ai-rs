@@ -68,7 +68,7 @@ wire formats, cookie formats and error codes are shared and must stay aligned.
 | Layer       | Technology                                                                 |
 | ----------- | -------------------------------------------------------------------------- |
 | Language    | Rust 2024, MSRV 1.89, async (Tokio)                                        |
-| JOSE        | `jsonwebtoken` (JWT verification, `aws_lc_rs` backend); the OIDC steps around it and the sealed cookie (compact JWE `dir` / `A256GCM`) are in the SDK |
+| JOSE        | In-crate JWS verification over `aws-lc-rs` (see §10); the OIDC steps around it and the sealed cookie (compact JWE `dir` / `A256GCM`) are in the SDK |
 | Crypto      | `aws-lc-rs` (AES-256-GCM, SHA-256, CSPRNG, constant-time comparison)       |
 | HTTP        | `reqwest` (rustls) behind the `Transport` trait                            |
 | Validation  | `serde` models at every boundary                                           |
@@ -76,7 +76,7 @@ wire formats, cookie formats and error codes are shared and must stay aligned.
 | Frameworks  | axum (optional `axum` feature)                                             |
 | Testing     | `cargo test`, `tokio::test`, a scripted mock identity provider             |
 
-**Do not reimplement what `jsonwebtoken` or `reqwest` already do.** The OAuth token
+**Do not reimplement what `aws-lc-rs` or `reqwest` already do.** The OAuth token
 endpoint exchange is small and written here on purpose, stateless: it is shared by
 concurrent users, which rules out the stateful OAuth clients of the popular crates (they
 keep the last token on the instance). Keep every runtime dependency permissively licensed
@@ -164,7 +164,7 @@ src/
   (`src/error.rs`). Never return a `Box<dyn Error>` or a `String` error for an SDK condition.
 - Adding a code: pick the domain prefix (`CFG_`, `OIDC_`, `TOK_`, `API_`, `GW_`, `SES_`,
   `REQ_`, `SRV_`), take the next number, add the variant, its wire string and a **generic**
-  default message to `ErrorCode`, map its HTTP status in `web::status_for`, mirror it in the
+  default message to `ErrorCode`, map its HTTP status in `web::status_for`, document it in `docs-site` (error-code reference), mirror it in the
   TypeScript and Python SDKs, and add a test.
 - `message` and `details` are for developers and logs. **Anything that reaches a browser
   uses `to_public_json()`** (code plus the generic registry message). Never put tokens,
@@ -185,9 +185,9 @@ src/
   path is checked before a token is even minted.
 - A failed sign-in callback answers one generic `403 SES_005`; the cause goes to `on_error`.
 - Comparisons of secrets (state, nonce) are constant-time.
-- Only ES256, ES384, RS256/384/512 and PS256/384/512 are accepted for JWTs, pinned to the
-  algorithm the provider advertises. `none`, HMAC and `EdDSA` (RFC 9864 deprecates that
-  name) are never accepted.
+- Only ES256/384/512, RS256/384/512, PS256/384/512 and the fully specified `Ed25519` are
+  accepted for JWTs, pinned to the algorithm the provider advertises. `none`, HMAC and
+  `EdDSA` (RFC 9864 deprecates that name) are never accepted. `Ed448` is unsupported.
 - Keep dependencies current and review advisories before upgrading (`cargo audit`). Do not
   add a dependency for what a few idiomatic lines do.
 
@@ -213,13 +213,29 @@ instead of keeping a shim.
 
 ## 9. Documentation
 
-User-visible behaviour changes update the rustdoc, the README quick start (it is compiled
-as a doctest) and `CHANGELOG.md` in the same change. The shared concepts and the
-error-code reference live in the documentation of the TypeScript and Python SDKs: keep
-them aligned.
+User-visible behaviour changes update the rustdoc, `docs-site/content/docs/` (Docus), the
+README quick start (it is compiled as a doctest) and `CHANGELOG.md` in the same change. The
+shared concepts and the error-code reference are the same in the documentation of the
+TypeScript and Python SDKs: keep them aligned.
 
 ## 10. Exceptions
 
 Any exception to a rule above must state, in the change itself: the rule being relaxed,
 why the normal rule cannot apply, the risk and impact, the mitigation, the rejected
 alternative, and the condition to revisit or remove it. Undocumented exceptions are defects.
+
+### Exception: in-crate JWS verification
+
+- **Rule relaxed:** "Do not reimplement what a maintained crate already does".
+- **Why:** the shared algorithm policy (better-auth issue #11348, RFC 9864) accepts the
+  fully specified `Ed25519` and refuses `EdDSA`. `jsonwebtoken` only knows the deprecated
+  `EdDSA` name, so it cannot express the policy.
+- **Risk and impact:** a verifier written here could mishandle a token. Impact is limited
+  to `src/jws.rs`: it parses the compact form, pins the algorithm, and delegates every
+  signature check to `aws-lc-rs`; it never implements a primitive.
+- **Mitigation:** unit tests in `src/jws.rs` and `tests/jws_algorithms.rs` cover every
+  algorithm, algorithm confusion (`none`, HMAC, `EdDSA`, mismatching headers) and foreign keys.
+- **Rejected alternative:** `jsonwebtoken` with an `EdDSA` alias for `Ed25519`, which
+  would accept the name the policy refuses.
+- **Revisit when:** a maintained JOSE crate verifies `Ed25519` and `Ed448` under their
+  fully specified names.

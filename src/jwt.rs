@@ -3,15 +3,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use jsonwebtoken::errors::ErrorKind;
-use jsonwebtoken::jwk::Jwk;
-use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use serde_json::{Map, Value};
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
 use crate::error::{AuthAiError, ErrorCode, Result};
+use crate::jws::{self, Algorithm, PublicKey};
 use crate::transport::{HttpRequest, Method, Transport};
+use crate::util::now_unix_f64;
 
 /// An unknown `kid` (key rotation) refreshes the keys at most once per second.
 pub(crate) const JWKS_UNKNOWN_KID_COOLDOWN: Duration = Duration::from_secs(1);
@@ -20,26 +19,9 @@ pub(crate) const JWKS_COOLDOWN: Duration = Duration::from_secs(30);
 /// Keys older than this are never served.
 pub(crate) const JWKS_MAX_AGE: Duration = Duration::from_secs(3600);
 
-/// The signing algorithms this SDK verifies. HMAC and `none` never qualify, and
-/// neither does the deprecated `EdDSA` name (RFC 9864).
-#[must_use]
-pub(crate) fn supported_algorithm(name: &str) -> Option<Algorithm> {
-    match name {
-        "ES256" => Some(Algorithm::ES256),
-        "ES384" => Some(Algorithm::ES384),
-        "RS256" => Some(Algorithm::RS256),
-        "RS384" => Some(Algorithm::RS384),
-        "RS512" => Some(Algorithm::RS512),
-        "PS256" => Some(Algorithm::PS256),
-        "PS384" => Some(Algorithm::PS384),
-        "PS512" => Some(Algorithm::PS512),
-        _ => None,
-    }
-}
-
 struct KeyEntry {
     kid: Option<String>,
-    key: Arc<DecodingKey>,
+    key: Arc<PublicKey>,
 }
 
 #[derive(Default)]
@@ -83,7 +65,7 @@ impl RemoteJwks {
     }
 
     /// The keys that may have signed a token with this `kid`.
-    async fn candidates(&self, kid: Option<&str>) -> Result<Vec<Arc<DecodingKey>>> {
+    async fn candidates(&self, kid: Option<&str>) -> Result<Vec<Arc<PublicKey>>> {
         let mut state = self.state.lock().await;
         let now = Instant::now();
         let age = state.loaded_at.map(|loaded| now.duration_since(loaded));
@@ -118,21 +100,6 @@ impl RemoteJwks {
         Ok(selected)
     }
 
-    fn supports(&self, key: &Value) -> bool {
-        let text = |name: &str| key.get(name).and_then(Value::as_str);
-        if !matches!(text("use"), None | Some("sig")) {
-            return false;
-        }
-        if text("alg").is_some_and(|alg| supported_algorithm(alg) != Some(self.algorithm)) {
-            return false;
-        }
-        match self.algorithm {
-            Algorithm::ES256 => text("kty") == Some("EC") && text("crv") == Some("P-256"),
-            Algorithm::ES384 => text("kty") == Some("EC") && text("crv") == Some("P-384"),
-            _ => text("kty") == Some("RSA"),
-        }
-    }
-
     async fn fetch(&self) -> Result<Vec<KeyEntry>> {
         let failure =
             |message: &str| AuthAiError::new(ErrorCode::Tok001).with_message(message.to_owned());
@@ -154,18 +121,16 @@ impl RemoteJwks {
             .get("keys")
             .and_then(Value::as_array)
             .ok_or_else(|| failure("The provider's key set has no keys"))?;
-        let mut entries = Vec::new();
-        for key in listed.iter().filter(|key| self.supports(key)) {
-            let jwk: Jwk = serde_json::from_value(key.clone())
-                .map_err(|err| failure("A published key is malformed").with_source(err))?;
-            let decoding = DecodingKey::from_jwk(&jwk)
-                .map_err(|err| failure("A published key is unusable").with_source(err))?;
-            entries.push(KeyEntry {
-                kid: key.get("kid").and_then(Value::as_str).map(str::to_owned),
-                key: Arc::new(decoding),
-            });
-        }
-        Ok(entries)
+        // A key that cannot verify the pinned algorithm is not a candidate.
+        Ok(listed
+            .iter()
+            .filter_map(|jwk| {
+                Some(KeyEntry {
+                    kid: jwk.get("kid").and_then(Value::as_str).map(str::to_owned),
+                    key: Arc::new(PublicKey::from_jwk(jwk, self.algorithm)?),
+                })
+            })
+            .collect())
     }
 }
 
@@ -174,19 +139,6 @@ fn normalise_typ(value: Option<&str>) -> String {
     lowered
         .strip_prefix("application/")
         .map_or_else(|| lowered.clone(), str::to_owned)
-}
-
-fn failure_reason(kind: &ErrorKind) -> &'static str {
-    match kind {
-        ErrorKind::ExpiredSignature => "expired_token",
-        ErrorKind::ImmatureSignature => "token_not_yet_valid",
-        ErrorKind::InvalidSignature => "invalid_signature",
-        ErrorKind::InvalidIssuer => "invalid_issuer",
-        ErrorKind::InvalidAudience => "invalid_audience",
-        ErrorKind::MissingRequiredClaim(_) | ErrorKind::InvalidClaimFormat(_) => "invalid_claim",
-        ErrorKind::InvalidAlgorithm | ErrorKind::UnsupportedAlgorithm => "invalid_algorithm",
-        _ => "invalid_token",
-    }
 }
 
 fn rejection(reason: &'static str) -> AuthAiError {
@@ -227,33 +179,27 @@ impl JwtVerifier {
         audience: &str,
         typ: Option<&str>,
     ) -> Result<Map<String, Value>> {
-        let header = decode_header(token).map_err(|err| rejection(failure_reason(err.kind())))?;
-        if header.alg != self.algorithm {
+        let parsed = jws::parse(token).map_err(rejection)?;
+        if parsed.algorithm != self.algorithm.name() {
             return Err(rejection("invalid_algorithm"));
         }
-        let mut validation = Validation::new(self.algorithm);
-        validation.leeway = self.leeway;
-        validation.validate_nbf = true;
-        validation.set_issuer(&[self.issuer.as_str()]);
-        validation.set_audience(&[audience]);
-        validation.set_required_spec_claims(&["exp", "iss", "sub", "aud"]);
-
-        let mut last = rejection("invalid_signature");
-        for key in self.jwks.candidates(header.kid.as_deref()).await? {
-            match decode::<Map<String, Value>>(token, &key, &validation) {
-                Ok(data) => {
-                    if let Some(expected) = typ
-                        && normalise_typ(data.header.typ.as_deref())
-                            != normalise_typ(Some(expected))
-                    {
-                        return Err(AuthAiError::new(ErrorCode::Tok001)
-                            .with_message("Unexpected token type"));
-                    }
-                    return Ok(data.claims);
-                }
-                Err(err) => last = rejection(failure_reason(err.kind())),
-            }
+        let signed_by_a_published_key = self
+            .jwks
+            .candidates(parsed.key_id.as_deref())
+            .await?
+            .iter()
+            .any(|key| parsed.verify(self.algorithm, key));
+        if !signed_by_a_published_key {
+            return Err(rejection("invalid_signature"));
         }
-        Err(last)
+        let claims = parsed
+            .claims(&self.issuer, audience, self.leeway, now_unix_f64())
+            .map_err(rejection)?;
+        if let Some(expected) = typ
+            && normalise_typ(parsed.typ.as_deref()) != normalise_typ(Some(expected))
+        {
+            return Err(AuthAiError::new(ErrorCode::Tok001).with_message("Unexpected token type"));
+        }
+        Ok(claims)
     }
 }

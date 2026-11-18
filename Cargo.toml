@@ -30,7 +30,6 @@ async-trait = "0.1.92"
 aws-lc-rs = "1.19"
 axum = { version = "0.8", optional = true, default-features = false, features = ["tokio"] }
 base64 = "0.23"
-jsonwebtoken = { version = "12", default-features = false, features = ["aws_lc_rs"] }
 percent-encoding = "2.3"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "json", "gzip", "brotli"] }
 serde = { version = "1.0", features = ["derive"] }

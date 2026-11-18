@@ -131,7 +131,7 @@ async fn discovery_refuses_a_provider_without_a_supported_algorithm() {
         json!(["HS256"]),
         json!(["EdDSA"]),
         json!(["none"]),
-        json!(["Ed25519", "ES512"]),
+        json!(["Ed448", "HS512"]),
     ] {
         let idp = MockIdp::new();
         idp.update_metadata(&[("id_token_signing_alg_values_supported", algorithms.clone())]);

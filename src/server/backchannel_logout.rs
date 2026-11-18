@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
-use jsonwebtoken::decode_header;
 use serde_json::{Map, Value};
 
 use crate::client::AuthClient;
@@ -98,8 +97,9 @@ pub async fn verify_logout_token(
 ) -> Result<LogoutTokenClaims> {
     let client_id = auth.config().client_id();
     let payload = if allow_missing_typ {
-        let header = decode_header(token)
-            .map_err(|err| rejected("The logout token is malformed").with_source(err))?;
+        let header = crate::jws::parse(token).map_err(|reason| {
+            rejected("The logout token is malformed").with_detail("reason", reason)
+        })?;
         if let Some(typ) = header.typ.as_deref()
             && typ != LOGOUT_TOKEN_TYP
             && typ != format!("application/{LOGOUT_TOKEN_TYP}")

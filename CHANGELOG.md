@@ -37,7 +37,7 @@ resource sharing need an auth-service with `RESOURCE_SHARING_ENABLED`.
 - **Server (`auth_ai::server`)**: Bearer-token verifier, back-channel logout handler with replay
   protection, RFC 9728 protected-resource metadata and `WWW-Authenticate` challenges, machine API
   (subscription, metered usage, invoices, consumption reporting, resource sharing: `authorize`,
-  `list_accessible`, `validate`, `invalidate`).
+  `list_accessible`, `validate`, `invalidate`, `record_usage`).
 - **Backend-for-frontend (`auth_ai::web`, `auth_ai::axum`)**: `AuthHandlers` (`/login`,
   `/callback`, `/me`, `/logout`, `/backchannel-logout`, optional `/wallet`, `/wallet/stats`,
   `/models`), sealed one-shot login cookie (interoperable with the TypeScript and Python SDKs),
@@ -55,10 +55,11 @@ resource sharing need an auth-service with `RESOURCE_SHARING_ENABLED`.
   comparison of `state` and `nonce`.
 - A refresh-token rotation and a revocation run to completion even when the calling future is
   dropped, so the provider is never left with a rotated token this process did not store.
-- JWTs are verified against the single algorithm the provider advertises among ES256, ES384,
-  RS256/384/512 and PS256/384/512; `none`, HMAC and `EdDSA` (RFC 9864) are refused. `Ed25519`,
-  `Ed448` and `ES512` are not supported yet: a provider that only advertises them fails
-  discovery with `OIDC_001`.
+- JWTs are verified against the single algorithm the provider advertises among ES256/384/512,
+  RS256/384/512, PS256/384/512 and the fully specified `Ed25519`; `none`, HMAC and `EdDSA`
+  (RFC 9864) are refused, following better-auth issue #11348. `Ed448` is not supported: a
+  provider that only advertises it fails discovery with `OIDC_001`. The verifier is an
+  in-crate layer over `aws-lc-rs` (see AGENTS.md §10).
 - Credentials are `SecretString`s (redacted `Debug`, zeroed on drop); the crate forbids `unsafe`.
 
 [Unreleased]: https://github.com/circle-rd/auth-ai-rs/compare/v0.1.0...HEAD

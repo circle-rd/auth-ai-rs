@@ -8,6 +8,7 @@ mod machine_api;
 mod machine_tokens;
 mod protected_resource;
 mod resources;
+mod usage;
 
 pub use backchannel_logout::{
     BackchannelLogoutEvent, BackchannelLogoutHandler, LOGOUT_EVENT, LOGOUT_TOKEN_TYP,
@@ -30,3 +31,4 @@ pub use resources::{
     EventSource, GrantSubjectType, OwnerType, ResourceState, ResourceStatus, ResourcesApi,
     VALIDATE_SCOPE, ValidationResult,
 };
+pub use usage::{RecordedUsage, USAGE_SCOPE, UsageReceipt, UsageRecord, UsageSource};

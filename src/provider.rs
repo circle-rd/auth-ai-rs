@@ -8,7 +8,8 @@ use tokio::time::Instant;
 
 use crate::config::AuthClientConfig;
 use crate::error::{AuthAiError, ErrorCode, Result};
-use crate::jwt::{JwtVerifier, RemoteJwks, supported_algorithm};
+use crate::jws::Algorithm;
+use crate::jwt::{JwtVerifier, RemoteJwks};
 use crate::transport::{HttpRequest, Method, Transport};
 
 /// Discovery and keys change rarely; an hour keeps rotation picked up without a restart.
@@ -76,7 +77,7 @@ async fn discover(config: &AuthClientConfig, transport: &Arc<dyn Transport>) -> 
     let algorithm = metadata
         .id_token_signing_alg_values_supported
         .iter()
-        .find_map(|name| supported_algorithm(name));
+        .find_map(|name| Algorithm::from_name(name));
     let (Some(algorithm), Some(jwks_uri)) = (algorithm, metadata.jwks_uri.clone()) else {
         return Err(AuthAiError::new(ErrorCode::Oidc001).with_message(
             "The provider advertises no supported asymmetric ID token algorithm (ES256, ES384, RS*, PS*) or no jwks_uri",

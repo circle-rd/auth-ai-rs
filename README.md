@@ -96,12 +96,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Principles
 
-- **Do not reinvent OAuth or JOSE.** JWT verification stays with the maintained
-  crate [`jsonwebtoken`](https://crates.io/crates/jsonwebtoken), HTTP with
-  [`reqwest`](https://crates.io/crates/reqwest) (rustls) and the cryptography with
-  [`aws-lc-rs`](https://crates.io/crates/aws-lc-rs); the SDK adds what is specific
-  to auth-service on top of them. The declared direct runtime dependencies are
-  licensed under MIT, Apache-2.0 or ISC.
+- **Do not reinvent OAuth or JOSE.** The cryptography stays with the maintained
+  [`aws-lc-rs`](https://crates.io/crates/aws-lc-rs) and HTTP with
+  [`reqwest`](https://crates.io/crates/reqwest) (rustls). The JWS verification
+  itself is a small in-crate layer over `aws-lc-rs`, because no maintained Rust
+  JOSE crate verifies the fully specified `Ed25519` algorithm name yet (see
+  [Signing algorithms](#production)). The declared direct runtime dependencies
+  are licensed under MIT, Apache-2.0 or ISC.
 - **Backend-for-frontend by default.** The browser holds one opaque session
   cookie. Access and refresh tokens never reach it.
 - **Fail loud, leak nothing.** Invalid state is rejected, not repaired. Errors
@@ -164,7 +165,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 - Machine client for adapter services and scheme owners: ask auth-service
   whether a user may use a shared resource (`authorize`, fail closed), list what
   they can reach, and report the validation or loss of ownership of a resource
-  (`validate`, `invalidate`).
+  (`validate`, `invalidate`); report what a provider billed for a shared resource
+  (`record_usage`, idempotent).
 
 **Delivery**
 
@@ -289,19 +291,32 @@ The SDK is storage-agnostic on purpose. Before going live:
 - **Log with `on_error`, answer with `to_public_json()`.** Never forward
   `error.message()` or `error.details()` to a browser.
 - **Signing algorithms.** auth-service signs with ES256 (or RS256). The SDK
-  verifies ES256, ES384, RS256/384/512 and PS256/384/512; a provider that only
-  advertises `EdDSA` (deprecated by RFC 9864), `Ed25519`, `Ed448` or `ES512` fails
-  discovery with `OIDC_001`.
+  verifies ES256/384/512, RS256/384/512, PS256/384/512 and the fully specified
+  `Ed25519`, pinned to the single algorithm the provider advertises. `EdDSA`
+  (deprecated by RFC 9864), HMAC and `none` are never accepted. `Ed448` is not
+  supported (no maintained pure-Rust implementation): a provider that only
+  advertises it fails discovery with `OIDC_001`.
 - **Keep your web stack current:** keep `axum` and `tokio` on a release that
   carries the latest security fixes, and run `cargo audit`.
 
 ## Documentation
 
-The API reference is published at [docs.rs/auth-ai](https://docs.rs/auth-ai).
-The concepts, the error-code registry and the production checklist are shared
-with the other SDKs: see the documentation of
-[`auth-ai-ts`](https://github.com/circle-rd/auth-ai-ts) and
-[`auth-ai-py`](https://github.com/circle-rd/auth-ai-py).
+The full documentation is published at
+[docs.circle-cyber.com/auth-ai/rust](https://docs.circle-cyber.com/auth-ai/rust/):
+concepts, the axum guide and the framework-agnostic handlers, the configuration
+and API reference, the error-code registry and a production checklist. The API
+reference is also on [docs.rs/auth-ai](https://docs.rs/auth-ai). The same
+documentation exists for the
+[TypeScript](https://docs.circle-cyber.com/auth-ai/typescript/) and
+[Python](https://docs.circle-cyber.com/auth-ai/python/) SDKs.
+
+**For AI agents** — the documentation is exposed through a built-in MCP server
+(HTTP), so agents can query it directly:
+
+| Environment | MCP endpoint                                                         |
+| ----------- | -------------------------------------------------------------------- |
+| Production  | `https://docs.circle-cyber.com/auth-ai/rust/mcp`                     |
+| Local dev   | `http://localhost:3000/mcp` (run `npm run dev` in `docs-site/`)      |
 
 **Contributing** — the development rules in [AGENTS.md](AGENTS.md) (naming,
 typing strictness, error handling, testing, security) and the process in
@@ -313,14 +328,12 @@ Security reports: see [SECURITY.md](SECURITY.md). Releases are tracked in
 
 - **More adapters** (actix-web, Rocket) on top of the framework-agnostic
   handlers, as needs appear.
-- **Ed25519 and ES512 verification**, once the JOSE crate ecosystem supports
-  the fully specified algorithm names.
+- **Ed448 verification**, once a maintained Rust implementation exists.
 
 ## Credits & license
 
 Built and maintained by [CIRCLE](https://circle-cyber.com). Stands on the
-shoulders of [jsonwebtoken](https://crates.io/crates/jsonwebtoken),
-[reqwest](https://crates.io/crates/reqwest),
+shoulders of [reqwest](https://crates.io/crates/reqwest),
 [aws-lc-rs](https://crates.io/crates/aws-lc-rs), [serde](https://serde.rs),
 [tokio](https://tokio.rs) and [axum](https://crates.io/crates/axum).
 
