@@ -98,11 +98,12 @@ A nightly is published as `X.Y.Z-dev.YYYYMMDDHHMM` without any commit (`X.Y.Z` i
 next patch when `Cargo.toml` holds an already published version). Nightlies stay on
 crates.io: they can only be yanked, by a maintainer.
 
-Both workflows publish through crates.io Trusted Publishing (OIDC): no registry token is
-stored. A trusted publisher is configured on an existing crate, so the very first version
-is uploaded by hand by a maintainer (`cargo publish`); then register `release.yml` and
-`nightly.yml` of `circle-rd/auth-ai-rs` as trusted publishers of the `auth-ai` crate, with
-the environment `crates-io`.
+Both workflows currently publish with the `CARGO_REGISTRY_TOKEN` repository secret: a
+trusted publisher is configured on an existing crate, so the very first version cannot use
+OIDC. Once the first version of `auth-ai` is on crates.io, register `release.yml` and
+`nightly.yml` of `circle-rd/auth-ai-rs` as trusted publishers (owner `circle-rd`, repository
+`auth-ai-rs`, environment `crates-io`), re-enable the commented `crates-io-auth-action` steps
+in both workflows, and remove the token from them.
 
 ---
 
