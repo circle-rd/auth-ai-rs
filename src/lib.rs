@@ -8,7 +8,7 @@
 //! | Module | What it gives you |
 //! | --- | --- |
 //! | crate root | OIDC client, grants, claims helpers, wallet and gateway clients, error registry |
-//! | [`server`] | Bearer verification, back-channel logout, protected-resource metadata, machine API |
+//! | [`server`] | Bearer verification, back-channel logout, resource webhooks, protected-resource metadata, machine API |
 //! | [`web`] | Sign-in handlers (`WebRequest` → `WebResponse`), session store contract |
 //! | `axum` (feature) | Router and extractors for axum |
 //!
@@ -31,6 +31,7 @@ mod messages;
 mod provider;
 mod secret;
 mod session_user;
+mod sharing;
 mod token_endpoint;
 mod transport;
 mod types;
@@ -49,8 +50,8 @@ pub use claims::{
 };
 pub use client::AuthClient;
 pub use config::{
-    AuthClientConfig, AuthClientConfigBuilder, DEFAULT_SCOPES, TokenEndpointAuthMethod,
-    WALLET_SELF_SCOPE,
+    AuthClientConfig, AuthClientConfigBuilder, DEFAULT_SCOPES, RESOURCE_SELF_SCOPE,
+    TokenEndpointAuthMethod, WALLET_SELF_SCOPE,
 };
 pub use error::{AuthAiError, DetailValue, ErrorCode, ErrorDetails, PublicError, Result};
 pub use gateway::{GatewayAgent, GatewayClient, GatewayMcpServer, GatewayModel};
@@ -65,6 +66,11 @@ pub use messages::{
 };
 pub use secret::SecretString;
 pub use session_user::{SessionUser, to_session_user};
+pub use sharing::{
+    AccessibleResource, Catalogue, CatalogueApplication, CreateGrant, CreateResource,
+    DeletedResource, Grant, GrantSubjectType, MemberApplication, Organization, OwnerType, Resource,
+    ResourceAudience, ResourceSharingClient, ResourceStatus, UpdateResource, ValidationRequest,
+};
 pub use transport::{
     HttpRequest, HttpResponse, MAX_RESPONSE_BYTES, Method, ReqwestTransport, Transport,
     TransportError, default_transport,

@@ -14,6 +14,39 @@ Sections, when present, appear in this order: `Added`, `Changed`, `Removed`,
 
 <!-- Add user-visible changes here. Move to a dated section at release time. -->
 
+## [0.2.0] - 2026-11-22
+
+Adds the self-service side of resource sharing and the verification of the resource
+webhooks auth-service delivers.
+
+### Added
+
+- **`user.resources`** (`auth_ai::ResourceSharingClient`, reachable as
+  `ai.for_user(id)?.resources`): the signed-in user shares their own resources.
+  `list_member_applications`, `list_organizations`, `list_owned`, `get`, `create`,
+  `update`, `delete`, `request_validation`, `list_grants`, `create_grant`,
+  `revoke_grant`, `list_accessible` and `get_catalogue`. Set
+  `AuthClientConfig::builder(..).resource_sharing(true)` to ask at sign-in for the
+  `resources:self:manage` scope and the auth-service audience. A user grant accepts
+  an e-mail (`subject_email`) resolved by auth-service among active members; an
+  organization grant requires the owner to belong to it. Inputs are validated before
+  any request (`CFG_001`).
+- **`ResourceAudience`** names who a resource is shared with at creation time: a user
+  id, a user e-mail, an organization, a plan or everyone.
+- **`verify_resource_event`** and **`ResourceWebhookVerifier`** (`auth_ai::server`)
+  verify and parse the signed `X-Auth-Service-Signature` callback auth-service sends
+  to an application's `resourceWebhookUrl` (`resource.grant.created`,
+  `resource.grant.revoked`). The timestamp is bounded (300 seconds by default,
+  configurable) and the payload is typed (`ResourceEvent`, with recipient and grant
+  models). Deduplicate on `event_id`.
+
+### Changed
+
+- **`JsonHttp` supports `PUT`, `PATCH` and `DELETE`**, plus a `204` path
+  (`request_empty`). Existing methods are unchanged.
+- `AuthClientConfig` gains `resource_sharing()`, and `RESOURCE_SELF_SCOPE` is exported
+  as `"resources:self:manage"`.
+
 ## [0.1.0] - 2026-11-18
 
 First release: the Rust port of `@circle-rd/auth-ai` and of the `auth-ai` Python package,
@@ -62,5 +95,6 @@ resource sharing need an auth-service with `RESOURCE_SHARING_ENABLED`.
   in-crate layer over `aws-lc-rs` (see AGENTS.md §10).
 - Credentials are `SecretString`s (redacted `Debug`, zeroed on drop); the crate forbids `unsafe`.
 
-[Unreleased]: https://github.com/circle-rd/auth-ai-rs/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/circle-rd/auth-ai-rs/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/circle-rd/auth-ai-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/circle-rd/auth-ai-rs/releases/tag/v0.1.0

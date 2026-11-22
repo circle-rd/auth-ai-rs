@@ -188,12 +188,12 @@ struct ResourceResponse {
     resource: ResourceState,
 }
 
-pub(super) fn invalid(what: &str, issues: &[String]) -> AuthAiError {
+pub(crate) fn invalid(what: &str, issues: &[String]) -> AuthAiError {
     AuthAiError::new(ErrorCode::Cfg001)
         .with_message(format!("Invalid {what}: {}", issues.join("; ")))
 }
 
-pub(super) fn length_between(
+pub(crate) fn length_between(
     issues: &mut Vec<String>,
     field: &str,
     value: &str,
@@ -206,7 +206,7 @@ pub(super) fn length_between(
     }
 }
 
-pub(super) fn is_uuid(value: &str) -> bool {
+pub(crate) fn is_uuid(value: &str) -> bool {
     let groups: Vec<&str> = value.split('-').collect();
     groups.len() == 5
         && groups.iter().zip([8, 4, 4, 4, 12]).all(|(group, length)| {

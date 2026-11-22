@@ -1,4 +1,4 @@
-//! Bearer verification, back-channel logout, protected-resource metadata and the machine API.
+//! Bearer verification, back-channel logout, resource webhooks, protected-resource metadata and the machine API.
 
 mod backchannel_logout;
 mod bearer;
@@ -7,8 +7,9 @@ mod consumption;
 mod machine_api;
 mod machine_tokens;
 mod protected_resource;
-mod resources;
+pub(crate) mod resources;
 mod usage;
+mod webhooks;
 
 pub use backchannel_logout::{
     BackchannelLogoutEvent, BackchannelLogoutHandler, LOGOUT_EVENT, LOGOUT_TOKEN_TYP,
@@ -32,3 +33,8 @@ pub use resources::{
     VALIDATE_SCOPE, ValidationResult,
 };
 pub use usage::{RecordedUsage, USAGE_SCOPE, UsageReceipt, UsageRecord, UsageSource};
+pub use webhooks::{
+    DEFAULT_TOLERANCE_SECONDS, ResourceEvent, ResourceEventType, ResourceWebhookVerifier,
+    SIGNATURE_HEADER, WebhookApplication, WebhookGrant, WebhookRecipients, WebhookResource,
+    verify_resource_event,
+};

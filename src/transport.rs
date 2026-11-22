@@ -16,13 +16,19 @@ use crate::util::form_encode;
 /// The largest answer the default transport reads. A bigger one is a failure.
 pub const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
-/// HTTP method: the SDK only reads and posts.
+/// HTTP method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
     /// `GET`.
     Get,
     /// `POST`.
     Post,
+    /// `PUT`.
+    Put,
+    /// `PATCH`.
+    Patch,
+    /// `DELETE`.
+    Delete,
 }
 
 impl Method {
@@ -32,6 +38,9 @@ impl Method {
         match self {
             Self::Get => "GET",
             Self::Post => "POST",
+            Self::Put => "PUT",
+            Self::Patch => "PATCH",
+            Self::Delete => "DELETE",
         }
     }
 }
@@ -230,6 +239,9 @@ impl Transport for ReqwestTransport {
         let method = match request.method {
             Method::Get => reqwest::Method::GET,
             Method::Post => reqwest::Method::POST,
+            Method::Put => reqwest::Method::PUT,
+            Method::Patch => reqwest::Method::PATCH,
+            Method::Delete => reqwest::Method::DELETE,
         };
         let mut builder = self
             .client
@@ -322,6 +334,15 @@ mod tests {
         };
         assert!(!broken.is_success());
         assert_eq!(broken.json_value(), None);
+    }
+
+    #[test]
+    fn every_method_has_its_token() {
+        assert_eq!(Method::Get.as_str(), "GET");
+        assert_eq!(Method::Post.as_str(), "POST");
+        assert_eq!(Method::Put.as_str(), "PUT");
+        assert_eq!(Method::Patch.as_str(), "PATCH");
+        assert_eq!(Method::Delete.as_str(), "DELETE");
     }
 
     #[test]
