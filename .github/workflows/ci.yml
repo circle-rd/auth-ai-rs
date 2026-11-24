@@ -68,12 +68,14 @@ jobs:
   audit:
     name: Audit dependencies
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      checks: write
     steps:
       - uses: actions/checkout@v7
 
-      - uses: rustsec/audit-check@v2.0.0
+      # A prebuilt binary: compiling cargo-audit under the pinned 1.89 toolchain fails on its dependencies' MSRV.
+      - uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+
+      # Called directly so cargo's rustup shim does not install the pinned toolchain for a lockfile scan.
+      - name: Audit Cargo.lock
+        run: cargo-audit audit
