@@ -136,7 +136,7 @@ impl ResourceSharingClient {
     /// # Errors
     /// `CFG_001` when the id is not a UUID (checked before any request),
     /// `API_001` for a refusal, `API_002` for an unexpected answer.
-    pub async fn get(&self, resource_id: &str) -> Result<Resource> {
+    pub async fn get_resource(&self, resource_id: &str) -> Result<Resource> {
         check_id(resource_id, "resource id")?;
         let path = format!("{RESOURCES_PATH}/{}", encode_segment(resource_id));
         let response: ResourceResponse = self

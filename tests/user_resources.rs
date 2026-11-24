@@ -298,7 +298,7 @@ async fn invalid_inputs_are_refused_before_any_request() {
     let (idp, user) = user().await;
 
     for error in [
-        user.resources.get("not-a-uuid").await.unwrap_err(),
+        user.resources.get_resource("not-a-uuid").await.unwrap_err(),
         user.resources
             .update(RESOURCE_ID, &UpdateResource::default())
             .await
