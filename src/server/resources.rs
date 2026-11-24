@@ -4,13 +4,14 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use time::OffsetDateTime;
 
 use crate::error::{AuthAiError, ErrorCode, Result};
 use crate::http::JsonHttp;
 use crate::transport::Method;
 use crate::util::encode_segment;
 
-/// Machine scope that reaches every user and every resource of the instance.
+/// Machine scope that asks auth-service whether a user may use a resource.
 pub const AUTHORIZE_SCOPE: &str = "resources:authorize";
 /// Machine scope of the validator bound to a resource scheme.
 pub const VALIDATE_SCOPE: &str = "resources:validate";
@@ -38,6 +39,16 @@ pub enum AccessKind {
     Grant,
 }
 
+/// The level a user holds on a resource: `Write` covers `Read`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ResourcePermission {
+    /// Use the resource.
+    Read,
+    /// Act on the resource.
+    Write,
+}
+
 /// Who a grant targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -50,6 +61,8 @@ pub enum GrantSubjectType {
     Plan,
     /// Everyone.
     Everyone,
+    /// An application, named by its slug.
+    Application,
 }
 
 /// Where a resource stands in its validation.
@@ -94,6 +107,11 @@ pub enum ValidationResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Allowed {
+    /// The admission to hand to `record_usage`; short-lived.
+    pub decision_id: String,
+    /// When the admission stops being accepted.
+    #[serde(with = "time::serde::rfc3339")]
+    pub expires_at: OffsetDateTime,
     /// The resource id.
     pub resource_id: String,
     /// The resource URI.
@@ -102,10 +120,13 @@ pub struct Allowed {
     pub application_slug: String,
     /// Who owns the resource.
     pub owner_type: OwnerType,
-    /// The owner's id.
-    pub owner_id: String,
+    /// The owner's id; present only for the application that owns the resource.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<String>,
     /// Why the user may use it.
     pub access_kind: AccessKind,
+    /// The level the user holds.
+    pub permission: ResourcePermission,
 }
 
 /// The answer to an authorization request.
@@ -155,10 +176,13 @@ pub struct AccessibleResource {
     pub application_name: String,
     /// Who owns the resource.
     pub owner_type: OwnerType,
-    /// The owner's id.
-    pub owner_id: String,
+    /// The owner's id; present only for the application that owns the resource.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<String>,
     /// Why the user may use it.
     pub access_kind: AccessKind,
+    /// The level the user holds: the owner and a `write` grant can act.
+    pub permission: ResourcePermission,
     /// Set when `access_kind` is `grant`.
     #[serde(default)]
     pub grant_subject_type: Option<GrantSubjectType>,
@@ -233,8 +257,9 @@ fn check_resource_id(issues: &mut Vec<String>, resource_id: &str) {
 ///
 /// The decision point stays auth-service: these calls ask it, they never decide.
 ///
-/// `resources:authorize` reaches every user and every resource of the instance,
-/// so a superadmin grants it only to a trusted enforcement point.
+/// `resources:authorize` is granted to an application's machine credential.
+/// Every decision is taken for that application: it sees the resources it owns
+/// and the ones shared with it, never everything a user owns.
 /// `resources:validate` is granted to new confidential applications and acts
 /// only for the resource schemes bound to the calling client.
 #[derive(Clone)]
@@ -253,12 +278,15 @@ impl std::fmt::Debug for ResourcesApi {
 pub struct AuthorizeRequest<'a> {
     /// The user, from a token you verified.
     pub subject_id: &'a str,
-    /// The OAuth client of that token.
-    pub client_id: &'a str,
+    /// The client the end user came through (the verified `azp`), recorded in
+    /// the access log only: the application asking is the machine credential.
+    pub actor_client_id: Option<&'a str>,
     /// The resource the user asks for.
     pub resource_uri: &'a str,
     /// The audience of that token.
     pub audience: &'a str,
+    /// The level the request needs: `read` by default, `write` to act on the resource.
+    pub permission: Option<ResourcePermission>,
     /// Correlates the access event with your own request id.
     pub request_id: Option<&'a str>,
     /// Recorded in the access log (`gateway` by default).
@@ -274,13 +302,15 @@ impl ResourcesApi {
         &self.http
     }
 
-    /// Asks whether a user may use a resource. Needs `resources:authorize`.
+    /// Asks whether a user may use a resource through the calling application.
+    /// Needs `resources:authorize`.
     ///
-    /// Take `subject_id`, `client_id` and `audience` from a token you verified,
-    /// never from the request body. Anything other than an
-    /// [`AuthorizeDecision::Allowed`] answer is a refusal, and so is a raised
-    /// error: fail closed. A denial carries no reason, so it cannot be used to
-    /// probe.
+    /// Take `subject_id` and `audience` from a token you verified, never from
+    /// the request body; the calling application is the machine credential
+    /// itself. Anything other than an [`AuthorizeDecision::Allowed`] answer is a
+    /// refusal, and so is a raised error: fail closed. A denial carries no
+    /// reason, so it cannot be used to probe. An allow carries the `permission`
+    /// the user holds and a short-lived `decision_id` to hand to `record_usage`.
     ///
     /// # Errors
     /// `CFG_001` for an invalid request (checked before any request), `API_001`
@@ -289,7 +319,9 @@ impl ResourcesApi {
     pub async fn authorize(&self, request: &AuthorizeRequest<'_>) -> Result<AuthorizeDecision> {
         let mut issues = Vec::new();
         length_between(&mut issues, "subject_id", request.subject_id, 1, 256);
-        length_between(&mut issues, "client_id", request.client_id, 1, 256);
+        if let Some(actor_client_id) = request.actor_client_id {
+            length_between(&mut issues, "actor_client_id", actor_client_id, 1, 256);
+        }
         length_between(&mut issues, "resource_uri", request.resource_uri, 3, 512);
         length_between(&mut issues, "audience", request.audience, 1, 2048);
         if let Some(request_id) = request.request_id {
@@ -300,9 +332,14 @@ impl ResourcesApi {
         }
         let mut body = Map::new();
         body.insert("subjectId".to_owned(), json!(request.subject_id));
-        body.insert("clientId".to_owned(), json!(request.client_id));
+        if let Some(actor_client_id) = request.actor_client_id {
+            body.insert("actorClientId".to_owned(), json!(actor_client_id));
+        }
         body.insert("resourceUri".to_owned(), json!(request.resource_uri));
         body.insert("audience".to_owned(), json!(request.audience));
+        if let Some(permission) = request.permission {
+            body.insert("permission".to_owned(), json!(permission));
+        }
         if let Some(request_id) = request.request_id {
             body.insert("requestId".to_owned(), json!(request_id));
         }
@@ -321,7 +358,7 @@ impl ResourcesApi {
             .await
     }
 
-    /// Every validated resource a user may use, across applications.
+    /// Every validated resource a user may use through the calling application.
     ///
     /// Use it to filter a listing, never as the admission of a request: call
     /// [`ResourcesApi::authorize`] for that. `scheme` narrows the list, e.g.

@@ -29,12 +29,13 @@ pub use protected_resource::{
 };
 pub use resources::{
     AUTHORIZE_SCOPE, AccessKind, AccessibleResource, Allowed, AuthorizeDecision, AuthorizeRequest,
-    EventSource, GrantSubjectType, OwnerType, ResourceState, ResourceStatus, ResourcesApi,
-    VALIDATE_SCOPE, ValidationResult,
+    EventSource, GrantSubjectType, OwnerType, ResourcePermission, ResourceState, ResourceStatus,
+    ResourcesApi, VALIDATE_SCOPE, ValidationResult,
 };
 pub use usage::{RecordedUsage, USAGE_SCOPE, UsageReceipt, UsageRecord, UsageSource};
 pub use webhooks::{
-    DEFAULT_TOLERANCE_SECONDS, ResourceEvent, ResourceEventType, ResourceWebhookVerifier,
-    SIGNATURE_HEADER, WebhookApplication, WebhookGrant, WebhookRecipients, WebhookResource,
+    DEFAULT_TOLERANCE_SECONDS, ResourceDeletedEvent, ResourceEvent, ResourceEventType,
+    ResourceGrantEvent, ResourceWebhookVerifier, SIGNATURE_HEADER, WebhookApplication,
+    WebhookDeletedResource, WebhookGrant, WebhookRecipients, WebhookResource,
     verify_resource_event,
 };

@@ -163,15 +163,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 **Resource sharing**
 
 - Machine client for adapter services and scheme owners: ask auth-service
-  whether a user may use a shared resource (`authorize`, fail closed), list what
-  they can reach, and report the validation or loss of ownership of a resource
+  whether a user may use a shared resource at a given level (`authorize`, fail
+  closed, scoped to the calling application), list what they can reach, and
+  report the validation or loss of ownership of a resource
   (`validate`, `invalidate`); report what a provider billed for a shared resource
-  (`record_usage`, idempotent).
+  (`record_usage`, idempotent, bound to the admitting decision).
 - Self-service client for a signed-in user (`resource_sharing(true)`):
-  declare, update, delete and validate their own resources, share them with a
-  user, an organization, a plan or everyone, and read what they may use.
+  declare, update, delete and validate their own resources, share them (`Read`
+  or `Write`) with a user, an organization, a plan, an application or everyone,
+  and read what they may use.
 - Signed resource webhooks: verify `X-Auth-Service-Signature`, bound the
-  timestamp and parse a typed `ResourceEvent`.
+  timestamp and parse a typed `ResourceEvent` (grant created, revoked or
+  updated, resource deleted).
 
 **Delivery**
 

@@ -20,10 +20,12 @@ const RESOURCE: &str = "0f9d6a3e-5c1b-4d52-9a47-2b8f3c6e1a90";
 const EVENT: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const PATH: &str = "/api/internal/gateway/usage";
 
+const DECISION: &str = "eyJ2IjoxfQ.c2ln";
+
 fn record() -> UsageRecord<'static> {
     UsageRecord {
-        subject_id: "user-1",
-        client_id: "gateway",
+        decision_id: DECISION,
+        started_at: SystemTime::now() - Duration::from_secs(2),
         resource_id: RESOURCE,
         resource_uri: "llm://models/gpt",
         request_id: EVENT,
@@ -56,6 +58,9 @@ async fn a_usage_event_is_sent_with_the_usage_scope_and_every_member() {
     let sent = &idp.requests_to(PATH)[0];
     assert_eq!(bearer(sent), "Bearer machine-1-resources:usage:write");
     let body = json_of(sent);
+    assert_eq!(body["decisionId"], DECISION);
+    assert!(body.get("subjectId").is_none() && body.get("clientId").is_none());
+    assert!(body["startedAt"].as_str().unwrap().ends_with('Z'));
     assert_eq!(body["usageSource"], "provider");
     assert_eq!(body["costUsd"], "0.0042");
     assert_eq!(body["promptTokens"], 120);
@@ -101,7 +106,7 @@ async fn a_replayed_event_is_reported_as_such() {
 #[tokio::test]
 async fn a_refusal_is_an_error() {
     let (idp, api, _) = machine();
-    for (status, code) in [(403, "RES_011"), (409, "RES_012")] {
+    for (status, code) in [(403, "RES_011"), (409, "RES_012"), (403, "RES_016")] {
         idp.on_api(move |_| {
             respond(
                 status,
@@ -134,13 +139,18 @@ async fn an_invalid_record_is_refused_before_any_request() {
     let too_old = SystemTime::now() - 31 * day;
     let too_far = SystemTime::now() + Duration::from_secs(10 * 60);
     let upper = EVENT.to_uppercase();
+    let long_decision = "d".repeat(2049);
     let bad = [
         UsageRecord {
-            subject_id: "",
+            decision_id: "",
             ..record()
         },
         UsageRecord {
-            client_id: "",
+            decision_id: &long_decision,
+            ..record()
+        },
+        UsageRecord {
+            started_at: SystemTime::UNIX_EPOCH + Duration::from_secs(300_000_000_000),
             ..record()
         },
         UsageRecord {

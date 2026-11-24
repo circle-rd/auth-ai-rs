@@ -67,9 +67,10 @@ pub use messages::{
 pub use secret::SecretString;
 pub use session_user::{SessionUser, to_session_user};
 pub use sharing::{
-    AccessibleResource, Catalogue, CatalogueApplication, CreateGrant, CreateResource,
-    DeletedResource, Grant, GrantSubjectType, MemberApplication, Organization, OwnerType, Resource,
-    ResourceAudience, ResourceSharingClient, ResourceStatus, UpdateResource, ValidationRequest,
+    AccessibleResource, BulkShareResult, Catalogue, CatalogueApplication, CreateGrant,
+    CreateResource, Grant, GrantSubjectType, MemberApplication, Organization, OwnerType, Resource,
+    ResourceAudience, ResourcePermission, ResourceSharingClient, ResourceStatus,
+    ShareWithApplication, UpdateResource, ValidationRequest,
 };
 pub use transport::{
     HttpRequest, HttpResponse, MAX_RESPONSE_BYTES, Method, ReqwestTransport, Transport,

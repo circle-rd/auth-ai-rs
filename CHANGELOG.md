@@ -12,7 +12,65 @@ Sections, when present, appear in this order: `Added`, `Changed`, `Removed`,
 
 ## [Unreleased]
 
-<!-- Add user-visible changes here. Move to a dated section at release time. -->
+## [0.3.0] - 2026-11-25
+
+Aligns the resource-sharing clients with application-scoped resources in auth-service: an
+application sees and uses the resources it owns or that were shared with it, never everything
+a user owns. This breaks 0.2.0 callers of the machine API.
+
+### Added
+
+- **`ResourcePermission`, `Read` or `Write`** (closed enum; `Write` covers `Read`).
+  `CreateGrant::permission` accepts it (`Read` when absent, and left out of the request),
+  `Grant::permission` is now typed, and `AccessibleResource::permission` carries the level
+  the user holds. An unknown value on the wire fails to parse (`API_002`).
+- **`user.resources.update_grant(resource_id, grant_id, permission)`** changes the level of an
+  active grant without revoking it (`RES_014` for a level the scheme does not support,
+  `RES_015` for an inactive grant).
+- **`user.resources.delete_grant(resource_id, grant_id)`** deletes a revoked or expired grant
+  for good (`RES_020` for an active one).
+- **`user.resources.share_with_application(resource_ids, &ShareWithApplication)`** shares up to
+  100 resources with one application in a call and returns one `BulkShareResult` per resource
+  (`resource_id`, `grant_id`, `code`). `Resource::permissions` lists the levels a scheme
+  supports on single-resource answers.
+- **`GrantSubjectType::Application`** on `create_grant`: `subject_id` is the application slug.
+- **`AuthorizeRequest::permission`** asks for a level (`Read` by default); an `Allowed` answer
+  carries `permission`, `decision_id` and `expires_at`.
+- **Webhook events `resource.grant.updated` and `resource.deleted`.** `ResourceEvent` is now an
+  enum tagged by `type`: `GrantCreated`, `GrantRevoked` and `GrantUpdated` carry a
+  `ResourceGrantEvent` with `grant.permission` and `grant.previous_permission`; `Deleted`
+  carries a `ResourceDeletedEvent` with the resource only. `ResourceEvent::kind()` and
+  `event_id()` read the type and the identifier to deduplicate on.
+
+### Changed
+
+- **`AuthorizeRequest` no longer takes `client_id`.** The application asking is the machine
+  credential; pass the client the end user came through as the optional `actor_client_id`,
+  which is recorded for audit and never decides anything.
+- **`UsageRecord` takes `decision_id` and `started_at` instead of `subject_id` and
+  `client_id`.** The decision returned by `authorize` names the person and the application, so
+  a usage event can no longer claim either. `started_at` must fall within the decision's
+  lifetime (`RES_016` otherwise).
+- **`Allowed::owner_id` and `AccessibleResource::owner_id` are `Option<String>`**, set only for
+  the application that owns the resource.
+- **`list_accessible` is scoped to the calling application** on the machine and the user
+  client: it returns what the application owns or was granted, not everything a user can reach.
+- **`user.resources.delete()` deletes for good and returns the `Resource`** (it used to return
+  `DeletedResource` after disabling). It fails with `RES_019` while the relay still serves the
+  model.
+- **A user bearer token is confined to its client's application**: the self-service client
+  sees that application's resources only.
+- **`ResourceEvent` is no longer a struct**: match on its variants. `WebhookResource::owner_id`
+  is `Option<String>`.
+- `JsonHttp::request_empty` (the `204` path) now serves `delete_grant`.
+
+### Removed
+
+- `DeletedResource`, its `removed` flag, and the `use` permission value.
+- **`user.resources.get()` is removed; use `get_resource()`.** `list` is a Python builtin, so
+  every SDK names its listings and lookups after their noun (`get_resource`, next to
+  `list_owned` and `list_organizations`). The call and its `CFG_001` validation are unchanged.
+  This breaks 0.2.0 callers.
 
 ## [0.2.0] - 2026-11-22
 
@@ -95,6 +153,7 @@ resource sharing need an auth-service with `RESOURCE_SHARING_ENABLED`.
   in-crate layer over `aws-lc-rs` (see AGENTS.md §10).
 - Credentials are `SecretString`s (redacted `Debug`, zeroed on drop); the crate forbids `unsafe`.
 
-[Unreleased]: https://github.com/circle-rd/auth-ai-rs/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/circle-rd/auth-ai-rs/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/circle-rd/auth-ai-rs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/circle-rd/auth-ai-rs/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/circle-rd/auth-ai-rs/releases/tag/v0.1.0
