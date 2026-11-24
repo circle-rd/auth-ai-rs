@@ -33,6 +33,7 @@ struct ApiErrorBody {
     error: ApiErrorDetail,
 }
 
+#[derive(Clone)]
 pub(crate) struct JsonHttp {
     base_url: String,
     transport: Arc<dyn Transport>,
@@ -66,6 +67,36 @@ impl JsonHttp {
         query: &[(&str, Option<String>)],
         body: Option<&Value>,
     ) -> Result<T> {
+        let response = self
+            .send_authenticated(method, path, scope, query, body)
+            .await?;
+        response
+            .parse_json()
+            .map_err(|err| AuthAiError::new(ErrorCode::Api002).with_source(err))
+    }
+
+    /// Same authentication and retry path as [`JsonHttp::request`], for a `204` answer.
+    pub(crate) async fn request_empty(
+        &self,
+        method: Method,
+        path: &str,
+        scope: &str,
+        query: &[(&str, Option<String>)],
+        body: Option<&Value>,
+    ) -> Result<()> {
+        self.send_authenticated(method, path, scope, query, body)
+            .await
+            .map(|_| ())
+    }
+
+    async fn send_authenticated(
+        &self,
+        method: Method,
+        path: &str,
+        scope: &str,
+        query: &[(&str, Option<String>)],
+        body: Option<&Value>,
+    ) -> Result<HttpResponse> {
         let mut response = self.send(method, path, scope, query, body).await?;
         // A revoked or rotated credential surfaces as 401: retry once with a fresh token.
         if response.status == 401 {
@@ -75,9 +106,7 @@ impl JsonHttp {
         if !response.is_success() {
             return Err(to_error(&response));
         }
-        response
-            .parse_json()
-            .map_err(|err| AuthAiError::new(ErrorCode::Api002).with_source(err))
+        Ok(response)
     }
 
     async fn send(
@@ -125,5 +154,114 @@ fn to_error(response: &HttpResponse) -> AuthAiError {
         Err(_) => AuthAiError::new(ErrorCode::Api001)
             .with_message(format!("auth-service answered {status}"))
             .with_detail("status", status),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::{Arc, Mutex, PoisonError};
+
+    use async_trait::async_trait;
+
+    use super::*;
+    use crate::secret::SecretString;
+    use crate::transport::TransportError;
+
+    #[derive(Debug)]
+    struct Scripted {
+        statuses: Mutex<Vec<u16>>,
+        sent: Mutex<Vec<HttpRequest>>,
+    }
+
+    #[async_trait]
+    impl Transport for Scripted {
+        async fn send(
+            &self,
+            request: HttpRequest,
+        ) -> std::result::Result<HttpResponse, TransportError> {
+            self.sent
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(request);
+            let status = {
+                let mut statuses = self.statuses.lock().unwrap_or_else(PoisonError::into_inner);
+                if statuses.is_empty() {
+                    500
+                } else {
+                    statuses.remove(0)
+                }
+            };
+            Ok(HttpResponse {
+                status,
+                headers: Vec::new(),
+                body: Vec::new(),
+            })
+        }
+    }
+
+    #[derive(Debug)]
+    struct Tokens(AtomicU32);
+
+    #[async_trait]
+    impl HttpTokens for Tokens {
+        async fn get_token(&self, _key: &str) -> Result<SecretString> {
+            let count = self.0.fetch_add(1, Ordering::SeqCst) + 1;
+            Ok(SecretString::new(format!("token-{count}")))
+        }
+
+        fn invalidate(&self, _key: &str) {}
+    }
+
+    fn client(statuses: Vec<u16>) -> (JsonHttp, Arc<Scripted>, Arc<Tokens>) {
+        let transport = Arc::new(Scripted {
+            statuses: Mutex::new(statuses),
+            sent: Mutex::new(Vec::new()),
+        });
+        let tokens = Arc::new(Tokens(AtomicU32::new(0)));
+        let http = JsonHttp::new(
+            "https://api.example",
+            Arc::clone(&transport) as Arc<dyn Transport>,
+            std::time::Duration::from_secs(1),
+            Arc::clone(&tokens) as Arc<dyn HttpTokens>,
+        );
+        (http, transport, tokens)
+    }
+
+    #[tokio::test]
+    async fn an_empty_answer_needs_no_body() {
+        let (http, transport, _) = client(vec![204]);
+        http.request_empty(
+            Method::Delete,
+            "/api/user/resources/1",
+            "resources",
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+        let sent = transport
+            .sent
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].method, Method::Delete);
+    }
+
+    #[tokio::test]
+    async fn a_refused_token_is_replaced_once_before_an_empty_answer() {
+        let (http, transport, tokens) = client(vec![401, 204]);
+        http.request_empty(Method::Put, "/api/user/resources/1", "resources", &[], None)
+            .await
+            .unwrap();
+        assert_eq!(tokens.0.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            transport
+                .sent
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .len(),
+            2
+        );
     }
 }

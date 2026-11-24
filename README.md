@@ -163,10 +163,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 **Resource sharing**
 
 - Machine client for adapter services and scheme owners: ask auth-service
-  whether a user may use a shared resource (`authorize`, fail closed), list what
-  they can reach, and report the validation or loss of ownership of a resource
+  whether a user may use a shared resource at a given level (`authorize`, fail
+  closed, scoped to the calling application), list what they can reach, and
+  report the validation or loss of ownership of a resource
   (`validate`, `invalidate`); report what a provider billed for a shared resource
-  (`record_usage`, idempotent).
+  (`record_usage`, idempotent, bound to the admitting decision).
+- Self-service client for a signed-in user (`resource_sharing(true)`):
+  declare, update, delete and validate their own resources, share them (`Read`
+  or `Write`) with a user, an organization, a plan, an application or everyone,
+  and read what they may use.
+- Signed resource webhooks: verify `X-Auth-Service-Signature`, bound the
+  timestamp and parse a typed `ResourceEvent` (grant created, revoked or
+  updated, resource deleted).
 
 **Delivery**
 
@@ -226,8 +234,8 @@ async fn report(auth: &AuthClient, user_id: &str) -> Result<(), auth_ai::AuthAiE
 
 | Import           | What it gives you                                                                        |
 | ---------------- | ---------------------------------------------------------------------------------------- |
-| `auth_ai`        | OIDC client, grants, claims helpers, wallet and gateway clients, error registry          |
-| `auth_ai::server`| Bearer verification, back-channel logout, protected-resource metadata, machine API       |
+| `auth_ai`        | OIDC client, grants, claims helpers, wallet, gateway and user-resource clients, errors    |
+| `auth_ai::server`| Bearer verification, back-channel logout, resource webhooks, metadata, machine API        |
 | `auth_ai::web`   | Sign-in handlers (`WebRequest` → `WebResponse`), session store contract                  |
 | `auth_ai::axum`  | `auth_router`, `AuthSession` and `OptionalAuthSession` for axum 0.8 (`axum` feature)     |
 
@@ -265,9 +273,10 @@ auth-ai-rs/
 │   ├── wallet.rs          WalletClient and wallet models (i128 micro-euros)
 │   ├── gateway.rs         GatewayClient — origin-locked requests, listings, MCP URLs
 │   ├── ai.rs              AiClient::for_user(grant_id)
+│   ├── sharing/           ResourceSharingClient — the signed-in user's resources and grants
 │   ├── error.rs           AuthAiError + ErrorCode registry (OIDC_*, TOK_*, GW_*, SES_*…)
 │   ├── transport.rs       The HTTP seam: Transport and the default reqwest client
-│   ├── 📁 server/         Bearer verification, back-channel logout, machine API
+│   ├── 📁 server/         Bearer verification, back-channel logout, resource webhooks, machine API
 │   ├── 📁 web/            Sign-in handlers, sealed cookies, session store contract
 │   └── axum.rs            axum adapter
 └── 📁 tests/              Integration suite on a scripted identity provider (no network)

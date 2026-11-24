@@ -10,6 +10,7 @@ use crate::gateway::{GatewayClient, GatewayTokens};
 use crate::grants::GrantManager;
 use crate::http::{HttpTokens, JsonHttp};
 use crate::secret::SecretString;
+use crate::sharing::ResourceSharingClient;
 use crate::wallet::WalletClient;
 
 /// Mints the access token of one user for one audience, from the grant manager.
@@ -62,6 +63,8 @@ impl GatewayTokens for AudienceTokens {
 pub struct UserAi {
     /// The user's wallet.
     pub wallet: WalletClient,
+    /// The user's own shared resources.
+    pub resources: ResourceSharingClient,
     gateway: Option<GatewayClient>,
 }
 
@@ -117,12 +120,22 @@ impl AiClient {
             ),
             config.issuer(),
         );
+        let resources = ResourceSharingClient::new(JsonHttp::new(
+            config.issuer(),
+            self.auth.transport(),
+            config.timeout(),
+            tokens(config.issuer()),
+        ));
         let gateway = config
             .gateway_url()
             .map(|url| {
                 GatewayClient::new(url, tokens(url), self.auth.transport(), config.timeout())
             })
             .transpose()?;
-        Ok(UserAi { wallet, gateway })
+        Ok(UserAi {
+            wallet,
+            resources,
+            gateway,
+        })
     }
 }

@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use aws_lc_rs::constant_time::verify_slices_are_equal;
 use aws_lc_rs::digest::{SHA256, digest};
+use aws_lc_rs::hmac;
 use aws_lc_rs::rand::fill;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -67,6 +68,28 @@ pub(crate) fn sha256_b64url(value: &str) -> String {
 
 pub(crate) fn sha256(value: &[u8]) -> Vec<u8> {
     digest(&SHA256, value).as_ref().to_vec()
+}
+
+/// HMAC-SHA256 of `data` under `key`.
+pub(crate) fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
+    hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, key), data)
+        .as_ref()
+        .to_vec()
+}
+
+/// Lowercase hexadecimal.
+pub(crate) fn hex_lower(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut text = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        text.push(char::from(
+            *DIGITS.get(usize::from(byte >> 4)).unwrap_or(&b'0'),
+        ));
+        text.push(char::from(
+            *DIGITS.get(usize::from(byte & 0x0f)).unwrap_or(&b'0'),
+        ));
+    }
+    text
 }
 
 /// Constant-time equality of two secrets (state, nonce).
@@ -150,6 +173,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(url, "https://a.example/auth?x=1&scope=a+b&r=1&r=2");
+    }
+
+    #[test]
+    fn hmac_sha256_matches_the_reference_vector() {
+        let tag = hmac_sha256(b"key", b"The quick brown fox jumps over the lazy dog");
+        assert_eq!(
+            hex_lower(&tag),
+            "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
+        );
     }
 
     #[test]

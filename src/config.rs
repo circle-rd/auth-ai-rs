@@ -21,6 +21,9 @@ pub const DEFAULT_SCOPES: [&str; 7] = [
 /// Scope that lets a user token read the user's own wallet.
 pub const WALLET_SELF_SCOPE: &str = "wallet:self:read";
 
+/// Scope that lets an application act for a user on their own shared resources.
+pub const RESOURCE_SELF_SCOPE: &str = "resources:self:manage";
+
 const DEFAULT_CLOCK_TOLERANCE_SECONDS: u64 = 5;
 const MAX_CLOCK_TOLERANCE_SECONDS: u64 = 300;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -40,7 +43,9 @@ pub enum TokenEndpointAuthMethod {
 ///
 /// With a gateway URL, the sign-in also asks for the audiences of the gateway
 /// and of auth-service (which serves the wallet) and for the wallet scope: this
-/// is what the application's "LiteLLM support" switch authorises.
+/// is what the application's "LiteLLM support" switch authorises. With
+/// `resource_sharing`, it also asks for `resources:self:manage` and the
+/// auth-service audience.
 #[derive(Debug, Clone)]
 pub struct AuthClientConfig {
     issuer: String,
@@ -52,6 +57,7 @@ pub struct AuthClientConfig {
     scopes: Vec<String>,
     resources: Vec<String>,
     gateway_url: Option<String>,
+    resource_sharing: bool,
     clock_tolerance_seconds: u64,
     timeout: Duration,
 }
@@ -77,6 +83,7 @@ impl AuthClientConfig {
                 .collect(),
             resources: Vec::new(),
             gateway_url: None,
+            resource_sharing: false,
             clock_tolerance_seconds: DEFAULT_CLOCK_TOLERANCE_SECONDS,
             timeout: DEFAULT_TIMEOUT,
         }
@@ -136,6 +143,12 @@ impl AuthClientConfig {
         self.gateway_url.as_deref()
     }
 
+    /// Whether sign-in asks for the resource-sharing scope and audience.
+    #[must_use]
+    pub const fn resource_sharing(&self) -> bool {
+        self.resource_sharing
+    }
+
     /// Allowed clock skew when checking token times.
     #[must_use]
     pub const fn clock_tolerance_seconds(&self) -> u64 {
@@ -161,6 +174,7 @@ pub struct AuthClientConfigBuilder {
     scopes: Vec<String>,
     resources: Vec<String>,
     gateway_url: Option<String>,
+    resource_sharing: bool,
     clock_tolerance_seconds: u64,
     timeout: Duration,
 }
@@ -214,6 +228,14 @@ impl AuthClientConfigBuilder {
     #[must_use]
     pub fn gateway_url(mut self, url: impl Into<String>) -> Self {
         self.gateway_url = Some(url.into());
+        self
+    }
+
+    /// Asks at sign-in for `resources:self:manage` and the auth-service audience,
+    /// which the self-service resource client needs.
+    #[must_use]
+    pub const fn resource_sharing(mut self, enabled: bool) -> Self {
+        self.resource_sharing = enabled;
         self
     }
 
@@ -289,9 +311,13 @@ impl AuthClientConfigBuilder {
             scopes.push(WALLET_SELF_SCOPE.to_owned());
             resources.push(gateway.clone());
             resources.push(self.issuer.clone());
-            scopes = dedup(scopes);
-            resources = dedup(resources);
         }
+        if self.resource_sharing {
+            scopes.push(RESOURCE_SELF_SCOPE.to_owned());
+            resources.push(self.issuer.clone());
+        }
+        scopes = dedup(scopes);
+        resources = dedup(resources);
         Ok(AuthClientConfig {
             issuer: self.issuer,
             client_id: self.client_id,
@@ -302,6 +328,7 @@ impl AuthClientConfigBuilder {
             scopes,
             resources,
             gateway_url: self.gateway_url,
+            resource_sharing: self.resource_sharing,
             clock_tolerance_seconds: self.clock_tolerance_seconds,
             timeout: self.timeout,
         })
@@ -404,6 +431,7 @@ mod tests {
         let config = builder().build().unwrap();
         assert_eq!(config.scopes(), DEFAULT_SCOPES);
         assert!(config.resources().is_empty());
+        assert!(!config.resource_sharing());
         assert_eq!(config.clock_tolerance_seconds(), 5);
         assert_eq!(config.timeout(), Duration::from_secs(10));
         assert!(config.client_secret().is_none());
@@ -431,6 +459,38 @@ mod tests {
                 "https://llm.example.com",
                 "https://auth.example.com"
             ]
+        );
+    }
+
+    #[test]
+    fn resource_sharing_adds_its_scope_and_the_auth_service_audience() {
+        let config = builder()
+            .resources(["https://api.example.com"])
+            .resource_sharing(true)
+            .build()
+            .unwrap();
+        assert!(config.resource_sharing());
+        assert!(config.scopes().contains(&RESOURCE_SELF_SCOPE.to_owned()));
+        assert_eq!(
+            config.resources(),
+            ["https://api.example.com", "https://auth.example.com"]
+        );
+
+        let both = builder()
+            .gateway_url("https://llm.example.com")
+            .resource_sharing(true)
+            .build()
+            .unwrap();
+        assert_eq!(
+            both.resources(),
+            ["https://llm.example.com", "https://auth.example.com"]
+        );
+        assert_eq!(
+            both.scopes()
+                .iter()
+                .filter(|scope| *scope == WALLET_SELF_SCOPE || *scope == RESOURCE_SELF_SCOPE)
+                .count(),
+            2
         );
     }
 
