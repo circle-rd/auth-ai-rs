@@ -11,8 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use auth_ai::ErrorCode;
 use auth_ai::server::{
-    DEFAULT_TOLERANCE_SECONDS, ResourceEventType, ResourceWebhookVerifier, SIGNATURE_HEADER,
-    verify_resource_event,
+    DEFAULT_TOLERANCE_SECONDS, ResourceEvent, ResourceEventType, ResourcePermission,
+    ResourceWebhookVerifier, SIGNATURE_HEADER, verify_resource_event,
 };
 use aws_lc_rs::hmac;
 use serde_json::{Value, json};
@@ -45,9 +45,27 @@ fn event() -> Value {
             "id": "9c8b7a6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
             "subjectType": "organization",
             "subjectId": "org-1",
+            "permission": "read",
+            "previousPermission": null,
             "expiresAt": null
         },
         "recipients": { "userIds": null, "allMembers": true }
+    })
+}
+
+fn deleted_event() -> Value {
+    json!({
+        "eventId": "5e2a0c4e-6b7f-4a1d-8e2c-3f5b6a7c8d90",
+        "type": "resource.deleted",
+        "occurredAt": "2026-11-20T10:05:00Z",
+        "application": { "id": "app-2", "slug": "chat" },
+        "resource": {
+            "id": "4b1f6f3e-5a6c-4d0e-9c53-0a4c6f0f7a11",
+            "uri": "gine://job-1",
+            "scheme": "gine",
+            "displayName": "Firmware",
+            "ownerType": "user"
+        }
     })
 }
 
@@ -74,13 +92,73 @@ fn a_valid_delivery_is_verified_and_typed() {
     let body = serde_json::to_vec(&event()).unwrap();
     let parsed =
         verify_resource_event(&headers(signature(&body, now(), SECRET)), &body, SECRET).unwrap();
-    assert_eq!(parsed.kind, ResourceEventType::GrantRevoked);
+    assert_eq!(parsed.kind(), ResourceEventType::GrantRevoked);
+    let ResourceEvent::GrantRevoked(revoked) = parsed else {
+        panic!("expected a revoked grant event");
+    };
     assert_eq!(
-        parsed.grant.subject_type,
+        revoked.grant.subject_type,
         auth_ai::GrantSubjectType::Organization
     );
-    assert!(parsed.recipients.all_members);
-    assert_eq!(parsed.recipients.user_ids, None);
+    assert_eq!(revoked.grant.permission, ResourcePermission::Read);
+    assert_eq!(revoked.grant.previous_permission, None);
+    assert_eq!(revoked.resource.owner_id.as_deref(), Some("user-1"));
+    assert!(revoked.recipients.all_members);
+    assert_eq!(revoked.recipients.user_ids, None);
+}
+
+#[test]
+fn a_level_change_carries_the_previous_level() {
+    let mut updated = event();
+    updated["type"] = json!("resource.grant.updated");
+    updated["grant"]["permission"] = json!("write");
+    updated["grant"]["previousPermission"] = json!("read");
+    let body = serde_json::to_vec(&updated).unwrap();
+    let parsed =
+        verify_resource_event(&headers(signature(&body, now(), SECRET)), &body, SECRET).unwrap();
+    let ResourceEvent::GrantUpdated(event) = parsed else {
+        panic!("expected an updated grant event");
+    };
+    assert_eq!(event.grant.permission, ResourcePermission::Write);
+    assert_eq!(
+        event.grant.previous_permission,
+        Some(ResourcePermission::Read)
+    );
+}
+
+#[test]
+fn a_deletion_carries_the_resource_only() {
+    let body = serde_json::to_vec(&deleted_event()).unwrap();
+    let parsed =
+        verify_resource_event(&headers(signature(&body, now(), SECRET)), &body, SECRET).unwrap();
+    assert_eq!(parsed.kind(), ResourceEventType::Deleted);
+    assert_eq!(parsed.event_id(), "5e2a0c4e-6b7f-4a1d-8e2c-3f5b6a7c8d90");
+    let ResourceEvent::Deleted(deleted) = parsed else {
+        panic!("expected a deletion event");
+    };
+    assert_eq!(deleted.resource.uri, "gine://job-1");
+    assert_eq!(deleted.resource.owner_id, None);
+}
+
+#[test]
+fn a_grant_event_without_a_permission_is_refused() {
+    let mut incomplete = event();
+    incomplete["grant"]
+        .as_object_mut()
+        .unwrap()
+        .remove("permission");
+    let mut legacy = event();
+    legacy["grant"]["permission"] = json!("use");
+    let mut grant_without_grant = event();
+    grant_without_grant.as_object_mut().unwrap().remove("grant");
+    let mut unknown = deleted_event();
+    unknown["type"] = json!("resource.moved");
+    for payload in [incomplete, legacy, grant_without_grant, unknown] {
+        let body = serde_json::to_vec(&payload).unwrap();
+        let err = verify_resource_event(&headers(signature(&body, now(), SECRET)), &body, SECRET)
+            .unwrap_err();
+        assert_eq!(err.code(), ErrorCode::Req001);
+    }
 }
 
 #[test]

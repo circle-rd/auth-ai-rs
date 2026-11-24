@@ -5,7 +5,9 @@ use serde_json::{Map, Value, json};
 use time::OffsetDateTime;
 
 use crate::server::resources::{is_uuid, length_between};
-use crate::server::{AccessibleResource, GrantSubjectType, OwnerType, ResourceStatus};
+use crate::server::{
+    AccessibleResource, GrantSubjectType, OwnerType, ResourcePermission, ResourceStatus,
+};
 
 /// A resource owned by a user or an application.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -26,6 +28,9 @@ pub struct Resource {
     /// The scheme display name.
     #[serde(default)]
     pub scheme_display_name: Option<String>,
+    /// The levels the scheme supports; present on single-resource answers.
+    #[serde(default)]
+    pub permissions: Option<Vec<ResourcePermission>>,
     /// The locator inside the scheme.
     #[serde(default)]
     pub locator: Option<String>,
@@ -75,7 +80,7 @@ pub struct Grant {
     #[serde(default)]
     pub subject_id: Option<String>,
     /// The permission the grant carries.
-    pub permission: String,
+    pub permission: ResourcePermission,
     /// When the grant expires.
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub expires_at: Option<OffsetDateTime>,
@@ -165,14 +170,19 @@ pub struct ValidationRequest {
     pub validation_command: Option<String>,
 }
 
-/// The answer to a deletion.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// The outcome of one resource in a `share_with_application` call.
+///
+/// `grant_id` is set when the resource was shared, `code` (such as `RES_014`)
+/// when it was refused.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DeletedResource {
-    /// The removed resource.
-    pub resource: Resource,
-    /// `true` when it was removed rather than disabled.
-    pub removed: bool,
+pub struct BulkShareResult {
+    /// The resource id.
+    pub resource_id: String,
+    /// The grant that was created.
+    pub grant_id: Option<String>,
+    /// Why the resource was not shared.
+    pub code: Option<String>,
 }
 
 /// The members of a resource declaration.
@@ -206,13 +216,27 @@ pub struct UpdateResource<'a> {
 /// The members of a grant.
 #[derive(Debug, Clone)]
 pub struct CreateGrant<'a> {
-    /// Who the grant targets.
+    /// Who the grant targets; `Application` shares the resource with another
+    /// application, named by its slug in `subject_id`.
     pub subject_type: GrantSubjectType,
     /// The target id.
     pub subject_id: Option<&'a str>,
     /// The e-mail of a user target, resolved by auth-service.
     pub subject_email: Option<&'a str>,
+    /// `read` by default; `write` also covers `read`. A scheme may support `read` only.
+    pub permission: Option<ResourcePermission>,
     /// When the grant expires; must be in the future.
+    pub expires_at: Option<OffsetDateTime>,
+}
+
+/// The members of a share with an application.
+#[derive(Debug, Clone)]
+pub struct ShareWithApplication<'a> {
+    /// The slug of the application that receives the resources.
+    pub application_slug: &'a str,
+    /// `read` by default; `write` also covers `read`.
+    pub permission: Option<ResourcePermission>,
+    /// When the shares expire; must be in the future.
     pub expires_at: Option<OffsetDateTime>,
 }
 

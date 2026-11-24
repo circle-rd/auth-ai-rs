@@ -34,10 +34,11 @@ pub enum UsageSource {
 /// replaying the same event is idempotent.
 #[derive(Debug, Clone)]
 pub struct UsageRecord<'a> {
-    /// The user, from a token you verified.
-    pub subject_id: &'a str,
-    /// The OAuth client of that token.
-    pub client_id: &'a str,
+    /// The `decision_id` of the admission that let the request through. It names
+    /// the person and the application, so a usage event cannot claim either.
+    pub decision_id: &'a str,
+    /// When the admitted request started; it must fall within the decision's lifetime.
+    pub started_at: SystemTime,
     /// The resource id.
     pub resource_id: &'a str,
     /// The resource URI.
@@ -117,8 +118,7 @@ fn check_window(issues: &mut Vec<String>, occurred_at: SystemTime) {
 
 fn validate(record: &UsageRecord<'_>) -> Vec<String> {
     let mut issues = Vec::new();
-    length_between(&mut issues, "subject_id", record.subject_id, 1, 256);
-    length_between(&mut issues, "client_id", record.client_id, 1, 256);
+    length_between(&mut issues, "decision_id", record.decision_id, 1, 2048);
     length_between(&mut issues, "resource_uri", record.resource_uri, 3, 512);
     if !is_uuid(record.resource_id) {
         issues.push("resource_id: must be a UUID".to_owned());
@@ -151,14 +151,34 @@ fn validate(record: &UsageRecord<'_>) -> Vec<String> {
     issues
 }
 
+fn rfc3339(instant: SystemTime) -> Result<String> {
+    let invalid_instant = || {
+        AuthAiError::new(ErrorCode::Cfg001).with_message("Invalid usage record: time out of range")
+    };
+    let offset = match instant.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(after) => time::Duration::try_from(after)
+            .ok()
+            .and_then(|after| OffsetDateTime::UNIX_EPOCH.checked_add(after)),
+        Err(before) => time::Duration::try_from(before.duration())
+            .ok()
+            .and_then(|before| OffsetDateTime::UNIX_EPOCH.checked_sub(before)),
+    }
+    .ok_or_else(invalid_instant)?;
+    offset.format(&Rfc3339).map_err(|error| {
+        AuthAiError::new(ErrorCode::Cfg001).with_message(format!("Invalid usage record: {error}"))
+    })
+}
+
 impl ResourcesApi {
     /// Records the usage a provider billed for a shared resource. Needs `resources:usage:write`.
     ///
     /// auth-service owns accounting; this is the only write. The scope is granted
     /// to the platform's metering components, never by default. Replaying an event
     /// is safe: the receipt carries `replayed: true`. A payload that conflicts with
-    /// the stored event for the same `request_id` is refused (`RES_012`), and so is
-    /// a caller with no access to the resource (`RES_011`).
+    /// the stored event for the same `request_id` is refused (`RES_012`), a caller
+    /// with no access to the resource is refused (`RES_011`), and so is a decision
+    /// that is invalid, expired or issued to another application, or a `started_at`
+    /// outside the decision's lifetime (`RES_016`).
     ///
     /// # Errors
     /// `CFG_001` for an invalid record (checked before any request), `API_001` for a
@@ -168,15 +188,11 @@ impl ResourcesApi {
         if !issues.is_empty() {
             return Err(invalid("usage record", &issues));
         }
-        let occurred_at = OffsetDateTime::from(record.occurred_at)
-            .format(&Rfc3339)
-            .map_err(|error| {
-                AuthAiError::new(ErrorCode::Cfg001)
-                    .with_message(format!("Invalid usage record: {error}"))
-            })?;
+        let started_at = rfc3339(record.started_at)?;
+        let occurred_at = rfc3339(record.occurred_at)?;
         let body = json!({
-            "subjectId": record.subject_id,
-            "clientId": record.client_id,
+            "decisionId": record.decision_id,
+            "startedAt": started_at,
             "resourceId": record.resource_id,
             "resourceUri": record.resource_uri,
             "requestId": record.request_id,

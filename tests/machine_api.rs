@@ -17,7 +17,7 @@ use auth_ai::AuthClientConfig;
 use auth_ai::ErrorCode;
 use auth_ai::server::{
     AccessKind, AuthorizeDecision, AuthorizeRequest, EventSource, MachineApi, OwnerType,
-    ResourceStatus, ValidationResult,
+    ResourcePermission, ResourceStatus, ValidationResult,
 };
 use serde_json::{Map, Value, json};
 use support::{
@@ -353,9 +353,10 @@ async fn running_totals_are_listed_and_read_by_key() {
 fn request<'a>() -> AuthorizeRequest<'a> {
     AuthorizeRequest {
         subject_id: "user-1",
-        client_id: "gateway",
+        actor_client_id: Some("gateway"),
         resource_uri: "llm://models/gpt",
         audience: "https://llm.test",
+        permission: None,
         request_id: None,
         source: None,
     }
@@ -363,8 +364,10 @@ fn request<'a>() -> AuthorizeRequest<'a> {
 
 fn allow_answer() -> Value {
     json!({
-        "decision": "allow", "resourceId": RESOURCE, "resourceUri": "llm://models/gpt", "applicationSlug": "llm-app",
-        "ownerType": "user", "ownerId": "owner-1", "accessKind": "grant", "extra": "ignored"
+        "decision": "allow", "decisionId": "eyJ2IjoxfQ.c2ln", "expiresAt": "2026-11-18T10:01:00.000Z",
+        "resourceId": RESOURCE, "resourceUri": "llm://models/gpt", "applicationSlug": "llm-app",
+        "ownerType": "user", "ownerId": "owner-1", "accessKind": "grant", "permission": "read",
+        "extra": "ignored"
     })
 }
 
@@ -373,6 +376,7 @@ async fn an_allowed_user_gets_the_resource_and_why() {
     let (idp, api, _) = machine();
     idp.on_api(|_| respond(200, &allow_answer()));
     let mut asked = request();
+    asked.permission = Some(ResourcePermission::Write);
     asked.request_id = Some("req-1");
     asked.source = Some(EventSource::Ssh);
 
@@ -385,24 +389,48 @@ async fn an_allowed_user_gets_the_resource_and_why() {
         (OwnerType::User, AccessKind::Grant)
     );
     assert_eq!(allowed.application_slug, "llm-app");
+    assert_eq!(allowed.decision_id, "eyJ2IjoxfQ.c2ln");
+    assert_eq!(allowed.expires_at.unix_timestamp(), 1_794_996_060);
+    assert_eq!(allowed.permission, ResourcePermission::Read);
+    assert_eq!(allowed.owner_id.as_deref(), Some("owner-1"));
     let sent = &idp.requests_to("/api/internal/gateway/authorize")[0];
     assert_eq!(
         json_of(sent),
         json!({
-            "subjectId": "user-1", "clientId": "gateway", "resourceUri": "llm://models/gpt",
-            "audience": "https://llm.test", "requestId": "req-1", "source": "ssh"
+            "subjectId": "user-1", "actorClientId": "gateway", "resourceUri": "llm://models/gpt",
+            "audience": "https://llm.test", "permission": "write", "requestId": "req-1",
+            "source": "ssh"
         })
     );
     assert_eq!(bearer(sent), "Bearer machine-1-resources:authorize");
 }
 
 #[tokio::test]
+async fn an_admission_without_an_owner_is_what_another_application_sees() {
+    let (idp, api, _) = machine();
+    let mut shared = allow_answer();
+    shared.as_object_mut().unwrap().remove("ownerId");
+    idp.on_api(move |_| respond(200, &shared));
+    let decision = api.resources.authorize(&request()).await.unwrap();
+    assert_eq!(decision.allowed().unwrap().owner_id, None);
+}
+
+#[tokio::test]
 async fn optional_members_are_left_out_of_the_request() {
     let (idp, api, _) = machine();
     idp.on_api(|_| respond(200, &json!({ "decision": "deny" })));
-    api.resources.authorize(&request()).await.unwrap();
+    let bare = AuthorizeRequest {
+        actor_client_id: None,
+        ..request()
+    };
+    api.resources.authorize(&bare).await.unwrap();
     let body = json_of(&idp.requests_to("/api/internal/gateway/authorize")[0]);
-    assert!(body.get("requestId").is_none() && body.get("source").is_none());
+    assert_eq!(
+        body,
+        json!({
+            "subjectId": "user-1", "resourceUri": "llm://models/gpt", "audience": "https://llm.test"
+        })
+    );
 }
 
 #[tokio::test]
@@ -419,7 +447,11 @@ async fn a_denial_carries_no_reason() {
 async fn anything_that_is_not_a_complete_allow_or_a_deny_can_never_read_as_an_admission() {
     let (idp, api, _) = machine();
     let mut incomplete = allow_answer();
-    incomplete.as_object_mut().unwrap().remove("ownerId");
+    incomplete.as_object_mut().unwrap().remove("decisionId");
+    let mut no_permission = allow_answer();
+    no_permission.as_object_mut().unwrap().remove("permission");
+    let mut bad_permission = allow_answer();
+    bad_permission["permission"] = json!("admin");
     let mut bad_kind = allow_answer();
     bad_kind["accessKind"] = json!("admin");
     for body in [
@@ -431,6 +463,8 @@ async fn anything_that_is_not_a_complete_allow_or_a_deny_can_never_read_as_an_ad
         json!("allow"),
         json!(null),
         incomplete,
+        no_permission,
+        bad_permission,
         bad_kind,
     ] {
         idp.on_api(move |_| respond(200, &body));
@@ -476,7 +510,7 @@ async fn authorize_validates_its_input_before_any_request() {
             ..request()
         },
         AuthorizeRequest {
-            client_id: "",
+            actor_client_id: Some(""),
             ..request()
         },
         AuthorizeRequest {
@@ -517,11 +551,11 @@ fn accessible() -> Value {
     json!({ "resources": [{
         "resourceId": RESOURCE, "resourceUri": "llm://models/gpt", "scheme": "llm", "displayName": "GPT",
         "applicationId": "app-1", "applicationSlug": "llm-app", "applicationName": "LLM", "ownerType": "application",
-        "ownerId": "app-1", "accessKind": "grant", "grantSubjectType": "everyone"
+        "ownerId": "app-1", "accessKind": "grant", "permission": "read", "grantSubjectType": "everyone"
     }, {
         "resourceId": RESOURCE, "resourceUri": "ssh://host", "scheme": "ssh", "displayName": "Host",
         "applicationId": "app-2", "applicationSlug": "ssh-app", "applicationName": "SSH", "ownerType": "user",
-        "ownerId": "u", "accessKind": "owner"
+        "accessKind": "owner", "permission": "write"
     }] })
 }
 
@@ -543,6 +577,10 @@ async fn accessible_resources_are_listed_with_an_optional_scheme() {
     );
     assert_eq!(listed[1].grant_subject_type, None);
     assert_eq!(listed[1].access_kind, AccessKind::Owner);
+    assert_eq!(listed[0].permission, ResourcePermission::Read);
+    assert_eq!(listed[1].permission, ResourcePermission::Write);
+    assert_eq!(listed[0].owner_id.as_deref(), Some("app-1"));
+    assert_eq!(listed[1].owner_id, None);
     let sent = &idp.requests_to("/api/internal/gateway/resources/accessible")[0];
     assert!(sent.url.ends_with("?subjectId=user+1&scheme=llm"));
     assert_eq!(bearer(sent), "Bearer machine-1-resources:authorize");

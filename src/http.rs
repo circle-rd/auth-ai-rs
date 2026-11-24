@@ -76,11 +76,6 @@ impl JsonHttp {
     }
 
     /// Same authentication and retry path as [`JsonHttp::request`], for a `204` answer.
-    // The self-service endpoints answer a body today; the 204 path belongs to the client.
-    #[allow(
-        dead_code,
-        reason = "the authenticated JSON client exposes the 204 path for endpoints that answer no body"
-    )]
     pub(crate) async fn request_empty(
         &self,
         method: Method,

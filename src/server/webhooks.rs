@@ -5,7 +5,7 @@ use time::OffsetDateTime;
 
 use crate::error::{AuthAiError, ErrorCode, Result};
 use crate::secret::SecretString;
-use crate::server::resources::{GrantSubjectType, OwnerType, ResourceStatus};
+use crate::server::resources::{GrantSubjectType, OwnerType, ResourcePermission, ResourceStatus};
 use crate::util::{hex_lower, hmac_sha256, now_unix, secrets_equal};
 
 /// The signature header auth-service sends with a resource webhook.
@@ -13,7 +13,7 @@ pub const SIGNATURE_HEADER: &str = "x-auth-service-signature";
 /// How far the webhook timestamp may be from now, by default.
 pub const DEFAULT_TOLERANCE_SECONDS: u64 = 300;
 
-/// What happened to a grant.
+/// What happened to a resource or one of its grants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResourceEventType {
     /// A grant was created.
@@ -22,6 +22,12 @@ pub enum ResourceEventType {
     /// A grant was revoked.
     #[serde(rename = "resource.grant.revoked")]
     GrantRevoked,
+    /// The level of a grant changed.
+    #[serde(rename = "resource.grant.updated")]
+    GrantUpdated,
+    /// The resource was deleted.
+    #[serde(rename = "resource.deleted")]
+    Deleted,
 }
 
 /// The application the event belongs to.
@@ -47,10 +53,30 @@ pub struct WebhookResource {
     pub display_name: String,
     /// Who owns the resource.
     pub owner_type: OwnerType,
-    /// The owner's id.
-    pub owner_id: String,
+    /// The owner's id; sent only to the application that owns the resource.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<String>,
     /// Where the resource stands in its validation.
     pub status: ResourceStatus,
+}
+
+/// The resource a deletion removed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookDeletedResource {
+    /// The resource id.
+    pub id: String,
+    /// The resource URI.
+    pub uri: String,
+    /// The URI scheme.
+    pub scheme: String,
+    /// Display name.
+    pub display_name: String,
+    /// Who owned the resource.
+    pub owner_type: OwnerType,
+    /// The owner's id; sent only to the application that owns the resource.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<String>,
 }
 
 /// The grant the event concerns.
@@ -64,6 +90,11 @@ pub struct WebhookGrant {
     /// The target id, when there is one.
     #[serde(default)]
     pub subject_id: Option<String>,
+    /// The level the grant carries.
+    pub permission: ResourcePermission,
+    /// The level before a `resource.grant.updated` event.
+    #[serde(default)]
+    pub previous_permission: Option<ResourcePermission>,
     /// When the grant expires.
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub expires_at: Option<OffsetDateTime>,
@@ -81,15 +112,12 @@ pub struct WebhookRecipients {
     pub all_members: bool,
 }
 
-/// A signed resource-sharing event delivered by auth-service.
+/// A grant event: `resource.grant.created`, `resource.grant.revoked` or `resource.grant.updated`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ResourceEvent {
+pub struct ResourceGrantEvent {
     /// The event id: deduplicate on it, delivery is at least once.
     pub event_id: String,
-    /// What happened.
-    #[serde(rename = "type")]
-    pub kind: ResourceEventType,
     /// When it happened.
     #[serde(with = "time::serde::rfc3339")]
     pub occurred_at: OffsetDateTime,
@@ -101,6 +129,63 @@ pub struct ResourceEvent {
     pub grant: WebhookGrant,
     /// Who to notify.
     pub recipients: WebhookRecipients,
+}
+
+/// A `resource.deleted` event: it carries the resource only, no grant and no recipients.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceDeletedEvent {
+    /// The event id: deduplicate on it, delivery is at least once.
+    pub event_id: String,
+    /// When it happened.
+    #[serde(with = "time::serde::rfc3339")]
+    pub occurred_at: OffsetDateTime,
+    /// The application.
+    pub application: WebhookApplication,
+    /// The resource that was removed.
+    pub resource: WebhookDeletedResource,
+}
+
+/// A signed resource-sharing event delivered by auth-service, tagged by its `type`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ResourceEvent {
+    /// A grant was created.
+    #[serde(rename = "resource.grant.created")]
+    GrantCreated(ResourceGrantEvent),
+    /// A grant was revoked.
+    #[serde(rename = "resource.grant.revoked")]
+    GrantRevoked(ResourceGrantEvent),
+    /// The level of a grant changed.
+    #[serde(rename = "resource.grant.updated")]
+    GrantUpdated(ResourceGrantEvent),
+    /// The resource was deleted.
+    #[serde(rename = "resource.deleted")]
+    Deleted(ResourceDeletedEvent),
+}
+
+impl ResourceEvent {
+    /// What happened.
+    #[must_use]
+    pub const fn kind(&self) -> ResourceEventType {
+        match self {
+            Self::GrantCreated(_) => ResourceEventType::GrantCreated,
+            Self::GrantRevoked(_) => ResourceEventType::GrantRevoked,
+            Self::GrantUpdated(_) => ResourceEventType::GrantUpdated,
+            Self::Deleted(_) => ResourceEventType::Deleted,
+        }
+    }
+
+    /// The event id: deduplicate on it, delivery is at least once.
+    #[must_use]
+    pub fn event_id(&self) -> &str {
+        match self {
+            Self::GrantCreated(event) | Self::GrantRevoked(event) | Self::GrantUpdated(event) => {
+                &event.event_id
+            }
+            Self::Deleted(event) => &event.event_id,
+        }
+    }
 }
 
 /// Verifies a resource webhook with the default 300-second timestamp window.
@@ -257,6 +342,8 @@ mod tests {
                 "id": "9c8b7a6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
                 "subjectType": "user",
                 "subjectId": "user-2",
+                "permission": "read",
+                "previousPermission": null,
                 "expiresAt": null
             },
             "recipients": { "userIds": ["user-2"], "allMembers": false }
@@ -282,9 +369,12 @@ mod tests {
         let parsed = ResourceWebhookVerifier::new(SECRET)
             .verify_at(&headers(sign(&body, NOW, SECRET)), &body, NOW)
             .unwrap();
-        assert_eq!(parsed.kind, ResourceEventType::GrantCreated);
-        assert_eq!(parsed.resource.uri, "gine://job-1");
-        assert_eq!(parsed.recipients.user_ids, Some(vec!["user-2".to_owned()]));
+        assert_eq!(parsed.kind(), ResourceEventType::GrantCreated);
+        let ResourceEvent::GrantCreated(created) = parsed else {
+            panic!("expected a created grant event");
+        };
+        assert_eq!(created.resource.uri, "gine://job-1");
+        assert_eq!(created.recipients.user_ids, Some(vec!["user-2".to_owned()]));
     }
 
     #[test]
@@ -295,7 +385,10 @@ mod tests {
         let parsed = ResourceWebhookVerifier::new(SECRET)
             .verify_at(&headers, &body, NOW)
             .unwrap();
-        assert_eq!(parsed.application.slug, "gine");
+        let ResourceEvent::GrantCreated(created) = parsed else {
+            panic!("expected a created grant event");
+        };
+        assert_eq!(created.application.slug, "gine");
     }
 
     #[test]
